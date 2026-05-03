@@ -26,10 +26,88 @@
     </script>
     <style>
       body { margin: 0; overflow: hidden; background-color: #1e293b; }
+      #mode-toggle {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 9999;
+        display: flex;
+        gap: 0;
+        border-radius: 8px;
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      }
+      #mode-toggle button {
+        padding: 10px 20px;
+        border: none;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: background 0.2s, color 0.2s;
+        letter-spacing: 0.5px;
+      }
+      #btn-vr {
+        background: #3b82f6;
+        color: #fff;
+      }
+      #btn-ar {
+        background: #1e293b;
+        color: #94a3b8;
+        border-left: 1px solid #334155;
+      }
+      #btn-vr.active { background: #3b82f6; color: #fff; }
+      #btn-vr:not(.active) { background: #1e293b; color: #94a3b8; }
+      #btn-ar.active { background: #10b981; color: #fff; }
+      #btn-ar:not(.active) { background: #1e293b; color: #94a3b8; }
+      #mode-label {
+        position: fixed;
+        top: 52px;
+        right: 12px;
+        z-index: 9999;
+        font-family: system-ui, sans-serif;
+        font-size: 11px;
+        color: #64748b;
+        text-align: right;
+      }
     </style>
   </head>
 
   <body>
+    <div id="mode-toggle">
+      <button id="btn-vr" class="active" onclick="setXRMode('vr')">VR</button>
+      <button id="btn-ar" onclick="setXRMode('ar')">AR</button>
+    </div>
+    <div id="mode-label">Fully immersive</div>
+    <script>
+      window.xrMode = 'immersive-vr';
+      function setXRMode(mode) {
+        const btnVR = document.getElementById('btn-vr');
+        const btnAR = document.getElementById('btn-ar');
+        const label = document.getElementById('mode-label');
+        if (mode === 'ar') {
+          window.xrMode = 'immersive-ar';
+          btnAR.classList.add('active');
+          btnVR.classList.remove('active');
+          label.textContent = 'Passthrough — see your room';
+        } else {
+          window.xrMode = 'immersive-vr';
+          btnVR.classList.add('active');
+          btnAR.classList.remove('active');
+          label.textContent = 'Fully immersive';
+        }
+      }
+
+      // Intercept XR session requests to use the selected mode
+      if (navigator.xr) {
+        const _origRequestSession = navigator.xr.requestSession.bind(navigator.xr);
+        navigator.xr.requestSession = function(mode, options) {
+          const useMode = (mode === 'immersive-vr' || mode === 'immersive-ar') ? window.xrMode : mode;
+          console.log('[XR] Requesting session:', useMode);
+          return _origRequestSession(useMode, options);
+        };
+      }
+    </script>
     <script type="module">
 import 'xrblocks/addons/simulator/SimulatorAddons.js';
 import * as THREE from 'three';
@@ -157,7 +235,7 @@ class SurvivalLab extends xb.Script {
     this.targets = [];
     this.trees = [];
     this.animals = [];
-    
+
     // REAL WORLD PHYSICS TUNING
     this.MAX_DRAW = 0.75;
     this.SLIP_DISTANCE = 0.85;
@@ -170,7 +248,7 @@ class SurvivalLab extends xb.Script {
     this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
     this.ARROW_CD = 1.5;            // Drag coefficient (laminar regime)
     this.ARROW_CROSS_AREA = 0.00005; // ~8mm diameter shaft cross-section m²
-    
+
     this.bowAttached = false;
     this.leftController = null;
     this.rightController = null;
@@ -194,7 +272,7 @@ class SurvivalLab extends xb.Script {
 
   init() {
     this.setupEnvironment();
-    this.setupVRConsole(); 
+    this.setupVRConsole();
     this.createSharedArrowAssets(); // [FIX #1]
     this.createBow();
     this.buildTestingZones();
@@ -213,7 +291,7 @@ class SurvivalLab extends xb.Script {
   setupVRConsole() {
     this.consoleGroup = new THREE.Group();
     this.consoleGroup.position.set(-4, 2, -4);
-    this.consoleGroup.rotation.y = Math.PI / 6; 
+    this.consoleGroup.rotation.y = Math.PI / 6;
     this.add(this.consoleGroup);
 
     const bg = new THREE.Mesh(
@@ -248,22 +326,22 @@ class SurvivalLab extends xb.Script {
     this.add(dir);
 
     // [FIX #8] MeshLambertMaterial for static scenery
-    const floor = new THREE.Mesh(
+    this.floor = new THREE.Mesh(
       new THREE.PlaneGeometry(50, 50),
       new THREE.MeshLambertMaterial({ color: 0x334155 })
     );
-    floor.rotation.x = -Math.PI / 2;
-    this.add(floor);
+    this.floor.rotation.x = -Math.PI / 2;
+    this.add(this.floor);
 
     // [FIX #18] Reduced grid density
-    const gridHelper = new THREE.GridHelper(50, 10, 0x475569, 0x1e293b);
-    gridHelper.position.y = 0.01;
-    this.add(gridHelper);
+    this.grid = new THREE.GridHelper(50, 10, 0x475569, 0x1e293b);
+    this.grid.position.y = 0.01;
+    this.add(this.grid);
 
     this.panelGroup = new THREE.Group();
     this.panelGroup.position.set(0, 2.0, -3.0);
     this.add(this.panelGroup);
-    
+
     this.hudText = new Text();
     this.hudText.text = "SURVIVAL PHYSICS TESTBED\nLook left for Debug Console.";
     this.hudText.fontSize = 0.1;
@@ -271,6 +349,30 @@ class SurvivalLab extends xb.Script {
     this.hudText.anchorX = 'center';
     this.hudText.textAlign = 'center';
     this.panelGroup.add(this.hudText);
+
+    // AR/VR mode: checked each frame in update()
+    this._currentXRMode = null;
+  }
+
+  // Toggle environment for AR (passthrough) vs VR
+  applyXRMode(isAR) {
+    // Hide floor and grid in AR so you see your real room
+    this.floor.visible = !isAR;
+    this.grid.visible = !isAR;
+
+    // Make renderer background transparent for passthrough
+    const renderer = xb.core?.renderer;
+    if (renderer) {
+      if (isAR) {
+        renderer.setClearColor(0x000000, 0);
+        renderer.setClearAlpha(0);
+      } else {
+        renderer.setClearColor(0x1e293b, 1);
+        renderer.setClearAlpha(1);
+      }
+    }
+
+    this.labLog(isAR ? "[MODE] AR Passthrough — floor hidden" : "[MODE] VR Immersive — full environment");
   }
 
   // [FIX #1] Shared geometry and materials — created once, reused for all arrows
@@ -293,7 +395,7 @@ class SurvivalLab extends xb.Script {
   createTarget(x, y, z, labelStr, hexColor, armorVal) {
     const group = new THREE.Group();
     group.position.set(x, y, z);
-    
+
     const radius = 0.5;
     // [FIX #8] Lambert for targets
     const board = new THREE.Mesh(
@@ -404,7 +506,7 @@ class SurvivalLab extends xb.Script {
     this.bowHud.fontSize = 0.03;
     this.bowHud.color = 0x38bdf8;
     this.bowHud.position.set(-0.05, 0, 0);
-    this.bowHud.rotation.y = -Math.PI / 2; 
+    this.bowHud.rotation.y = -Math.PI / 2;
     this.bowHud.anchorX = 'right';
     this.bowHud.anchorY = 'middle';
     this.bowHud.text = "KE: 0\nFatigue: 0%";
@@ -418,7 +520,7 @@ class SurvivalLab extends xb.Script {
     this.loadedArrow.visible = false;
     this.bowGroup.add(this.loadedArrow);
 
-    this.bowGroup.position.set(0, 1.2, -0.5); 
+    this.bowGroup.position.set(0, 1.2, -0.5);
     this.add(this.bowGroup);
 
     // [FIX #7] Create arrow pool after shared assets exist
@@ -426,7 +528,7 @@ class SurvivalLab extends xb.Script {
   }
 
   onSelectStart(event) {
-    initAudio(); 
+    initAudio();
     const ctrl = event.target;
     const handedness = ctrl.xrInputSource?.handedness;
 
@@ -436,21 +538,21 @@ class SurvivalLab extends xb.Script {
 
     if (isLeft && !this.bowAttached) {
       ctrl.add(this.bowGroup);
-      this.bowGroup.position.set(0, 0, -0.05); 
-      this.bowGroup.rotation.set(0, 0, 0); 
+      this.bowGroup.position.set(0, 0, -0.05);
+      this.bowGroup.rotation.set(0, 0, 0);
       this.leftController = ctrl;
       this.bowAttached = true;
       this.labLog("Bow attached to left hand.");
 
       // [FIX #6] Listen for disconnect on this controller
       ctrl.addEventListener('disconnected', () => this._onControllerDisconnect('left'));
-      return; 
+      return;
     }
     if (isRight && this.bowAttached) {
       // [FIX #4 string grab zone] Use radial distance check, not just z
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(ctrl.matrixWorld);
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
-      
+
       const grabRadius = Math.sqrt(localRightHand.x * localRightHand.x + localRightHand.y * localRightHand.y + localRightHand.z * localRightHand.z);
       if (grabRadius < 0.3 && localRightHand.z < 0.25) {
           this.rightController = ctrl;
@@ -491,7 +593,7 @@ class SurvivalLab extends xb.Script {
       // [FIX #5] Reuse pre-allocated vectors
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(this.rightController.matrixWorld);
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
-      
+
       // AUTO-RELEASE CHECK
       if (localRightHand.z > this.SLIP_DISTANCE) {
           this.labLog(`[OVERDRAW] String slipped! Pulled past ${this.SLIP_DISTANCE}m.`);
@@ -500,14 +602,14 @@ class SurvivalLab extends xb.Script {
           return;
       }
 
-      this.drawDistance = Math.max(0, Math.min(localRightHand.z, this.MAX_DRAW)); 
-      
+      this.drawDistance = Math.max(0, Math.min(localRightHand.z, this.MAX_DRAW));
+
       const positions = this.stringLine.geometry.attributes.position.array;
-      positions[3] = localRightHand.x; 
-      positions[4] = localRightHand.y; 
-      positions[5] = this.drawDistance; 
+      positions[3] = localRightHand.x;
+      positions[4] = localRightHand.y;
+      positions[5] = this.drawDistance;
       this.stringLine.geometry.attributes.position.needsUpdate = true;
-      this.loadedArrow.position.set(0, 0, this.drawDistance - 0.8); 
+      this.loadedArrow.position.set(0, 0, this.drawDistance - 0.8);
 
       const drawRatio = this.drawDistance / this.MAX_DRAW;
       // [FIX #13] Apply bow efficiency to velocity calculation
@@ -521,7 +623,7 @@ class SurvivalLab extends xb.Script {
       }
 
       let fatiguePercent = Math.min(100, (this.fatigueTimer / 3.0) * 100);
-      
+
       // [FIX #11] Progressive fatigue feedback
       const now = performance.now();
       if (fatiguePercent >= 50 && fatiguePercent < 80) {
@@ -536,7 +638,7 @@ class SurvivalLab extends xb.Script {
       }
 
       if (fatiguePercent >= 100) {
-        pulseHaptic(this.rightController, 1.0, 50); 
+        pulseHaptic(this.rightController, 1.0, 50);
         this.bowHud.color = 0xef4444; // Red critical
       } else if (fatiguePercent < 80) {
         this.bowHud.color = 0x38bdf8; // Normal blue
@@ -555,8 +657,8 @@ class SurvivalLab extends xb.Script {
 
   executeFire() {
       if (this.drawDistance > 0.25) {
-        pulseHaptic(this.rightController, 1.0, 50); 
-        pulseHaptic(this.leftController, 0.8, 30);  
+        pulseHaptic(this.rightController, 1.0, 50);
+        pulseHaptic(this.leftController, 0.8, 30);
 
         // [FIX #5] Reuse pre-allocated vectors
         const tipLocal = this._tmpVec3A.set(0, 0, this.drawDistance - 0.8);
@@ -564,16 +666,16 @@ class SurvivalLab extends xb.Script {
         const forward = this._tmpVec3B.set(0, 0, -1).applyQuaternion(
           this.bowGroup.getWorldQuaternion(this._tmpQuat)
         );
-        
+
         const drawRatio = this.drawDistance / this.MAX_DRAW;
         // [FIX #13] Efficiency applied here too
         const velocityMag = this.MAX_VEL * drawRatio * Math.sqrt(this.BOW_EFFICIENCY);
         const estKE = 0.5 * this.ARROW_MASS * (velocityMag * velocityMag);
         const velocityVec = forward.clone().multiplyScalar(velocityMag);
-        
+
         let wobbleApplied = false;
         if (this.fatigueTimer >= 3.0) {
-            const wobble = Math.min(1.0, (this.fatigueTimer - 3.0) / 2.0); 
+            const wobble = Math.min(1.0, (this.fatigueTimer - 3.0) / 2.0);
             velocityVec.x += (Math.random() - 0.5) * 6.0 * wobble;
             velocityVec.y += (Math.random() - 0.5) * 6.0 * wobble;
             velocityVec.z += (Math.random() - 0.5) * 6.0 * wobble;
@@ -609,7 +711,7 @@ class SurvivalLab extends xb.Script {
       this.labLog("[WARN] Arrow pool exhausted.");
       return;
     }
-    
+
     group.position.copy(startPos);
     group.quaternion.copy(orientation);
 
@@ -623,7 +725,7 @@ class SurvivalLab extends xb.Script {
 
     this.arrows.push(arrowData);
     this.arrowPool.active.push(arrowData);
-    
+
     playSound(twangBuffer, 0.8);
   }
 
@@ -667,7 +769,7 @@ class SurvivalLab extends xb.Script {
       arrow.life -= dt;
       if (arrow.life <= 0 || arrow.mesh.position.y <= -0.5) {
         if (arrow.mesh.position.y <= -0.5 && arrow.active) {
-            this.triggerSoundEvent(arrow.mesh.position, 5.0); 
+            this.triggerSoundEvent(arrow.mesh.position, 5.0);
         }
         // [FIX #7] Release back to pool
         this.arrowPool.release(arrow);
@@ -678,7 +780,7 @@ class SurvivalLab extends xb.Script {
       }
 
       const prevPos = this._tmpVec3A.copy(arrow.mesh.position);
-      
+
       // [FIX #9] Aerodynamic drag: F_drag = -½ρCdAv²  →  a_drag = F/m
       const speedSq = arrow.velocity.lengthSq();
       if (speedSq > 0.01) {
@@ -690,9 +792,9 @@ class SurvivalLab extends xb.Script {
         arrow.velocity.add(dragVec);
       }
 
-      arrow.velocity.addScaledVector(gravityVec, dt); 
+      arrow.velocity.addScaledVector(gravityVec, dt);
       arrow.mesh.position.addScaledVector(arrow.velocity, dt);
-      
+
       if (arrow.velocity.lengthSq() > 0.01) {
          arrow.mesh.lookAt(arrow.mesh.position.clone().add(arrow.velocity));
       }
@@ -729,15 +831,15 @@ class SurvivalLab extends xb.Script {
             }
         }
 
-        if (arrow.mesh.position.y < tree.trunkHeight && 
+        if (arrow.mesh.position.y < tree.trunkHeight &&
             Math.hypot(arrow.mesh.position.x - tree.x, arrow.mesh.position.z - tree.z) < tree.trunkRadius + 0.05) {
           arrow.active = false;
           hitTrunk = true;
-          playSound(bounceBuffer, 0.6); 
+          playSound(bounceBuffer, 0.6);
           pulseHaptic(this.leftController, 0.2, 10);
           this.labLog("[IMPACT] Hit Tree Trunk. Arrow stopped.");
-          this.triggerSoundEvent(arrow.mesh.position, 15.0); 
-          break; 
+          this.triggerSoundEvent(arrow.mesh.position, 15.0);
+          break;
         }
       }
       if (hitTrunk) continue;
@@ -755,21 +857,21 @@ class SurvivalLab extends xb.Script {
 
       if (hitTarget) {
         const currentKE = 0.5 * this.ARROW_MASS * arrow.velocity.lengthSq();
-        
+
         if (currentKE >= hitTarget.armor) {
             arrow.active = false;
             playSound(thwackBuffer, 1.0);
             pulseHaptic(this.leftController, 0.3, 20);
-            
+
             const embedMeters = Math.min(0.4, (currentKE - hitTarget.armor) * 0.001 + 0.05);
             arrow.mesh.position.copy(hitTarget.point).addScaledVector(flightDir, embedMeters);
             hitTarget.mesh.attach(arrow.mesh);
             this.labLog(`[IMPACT] STICK: KE ${currentKE.toFixed(0)}J > Armor ${hitTarget.armor}J`);
-            this.triggerSoundEvent(hitTarget.point, 5.0); 
+            this.triggerSoundEvent(hitTarget.point, 5.0);
         } else {
             playSound(bounceBuffer, 1.0);
             pulseHaptic(this.leftController, 0.5, 30);
-            
+
             // [FIX #5] Proper surface-normal reflection: v' = v - 2(v·n)n * restitution
             const normal = this._tmpVec3A.copy(hitTarget.faceNormal);
             // Transform face normal to world space using the target mesh's world quaternion
@@ -782,9 +884,9 @@ class SurvivalLab extends xb.Script {
             // Add small random scatter for realism
             arrow.velocity.x += (Math.random() - 0.5) * 2;
             arrow.velocity.y += (Math.random() - 0.5) * 2;
-            
+
             this.labLog(`[IMPACT] BOUNCE: KE ${currentKE.toFixed(0)}J < Armor ${hitTarget.armor}J`);
-            this.triggerSoundEvent(hitTarget.point, 20.0); 
+            this.triggerSoundEvent(hitTarget.point, 20.0);
         }
       }
     }
@@ -793,11 +895,26 @@ class SurvivalLab extends xb.Script {
   update() {
     const dt = xb.getDeltaTime();
 
+    // Detect AR/VR mode change at runtime
+    const renderer = xb.core?.renderer;
+    if (renderer && renderer.xr && renderer.xr.isPresenting) {
+      const session = renderer.xr.getSession();
+      if (session) {
+        const isAR = (session.environmentBlendMode === 'alpha-blend' ||
+                      session.environmentBlendMode === 'additive' ||
+                      window.xrMode === 'immersive-ar');
+        if (this._currentXRMode !== isAR) {
+          this._currentXRMode = isAR;
+          this.applyXRMode(isAR);
+        }
+      }
+    }
+
     if (!this.bowAttached && xb.core.input.controllers.length > 0) {
       const ctrl = xb.core.input.controllers[0];
       ctrl.add(this.bowGroup);
-      this.bowGroup.position.set(0, 0, -0.05); 
-      this.bowGroup.rotation.set(0, 0, 0); 
+      this.bowGroup.position.set(0, 0, -0.05);
+      this.bowGroup.rotation.set(0, 0, 0);
       this.leftController = ctrl;
       this.bowAttached = true;
     }
@@ -857,6 +974,19 @@ document.addEventListener('DOMContentLoaded', async function () {
     ...options.xrButton,
     startText: '<i id="xrlogo"></i> ENTER SURVIVAL LAB',
   };
+
+  // Check AR support and hide toggle if not available
+  if (navigator.xr) {
+    try {
+      const arSupported = await navigator.xr.isSessionSupported('immersive-ar');
+      if (!arSupported) {
+        document.getElementById('btn-ar').style.display = 'none';
+        document.getElementById('mode-label').textContent = 'AR not supported on this device';
+      }
+    } catch(e) {
+      document.getElementById('btn-ar').style.display = 'none';
+    }
+  }
 
   xb.add(new SurvivalLab());
   await xb.init(options);
