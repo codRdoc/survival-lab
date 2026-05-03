@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Survival Physics Lab - Auto Release</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link type="text/css" rel="stylesheet" href="https://xrblocks.github.io/css/xr.css" />
+    <script>
+      window.litDisableBundleWarning = true;
+    </script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/",
+          "troika-three-text": "https://cdn.jsdelivr.net/gh/protectwise/troika@028b81cf308f0f22e5aa8e78196be56ec1997af5/packages/troika-three-text/src/index.js",
+          "troika-three-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-three-utils/src/index.js",
+          "troika-worker-utils": "https://cdn.jsdelivr.net/gh/protectwise/troika@v0.52.4/packages/troika-worker-utils/src/index.js",
+          "bidi-js": "https://esm.sh/bidi-js@%5E1.0.2?target=es2022",
+          "webgl-sdf-generator": "https://esm.sh/webgl-sdf-generator@1.1.1/es2022/webgl-sdf-generator.mjs",
+          "lit": "https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js",
+          "lit/": "https://esm.run/lit@3/",
+          "xrblocks": "https://cdn.jsdelivr.net/npm/xrblocks@0.12.0/build/xrblocks.js",
+          "xrblocks/addons/": "https://cdn.jsdelivr.net/npm/xrblocks@0.12.0/build/addons/"
+        }
+      }
+    </script>
+    <style>
+      body { margin: 0; overflow: hidden; background-color: #1e293b; }
+    </style>
+  </head>
+
+  <body>
+    <script type="module">
+import 'xrblocks/addons/simulator/SimulatorAddons.js';
+import * as THREE from 'three';
+import * as xb from 'xrblocks';
+import { Text } from 'troika-three-text';
+
+// ==========================================
+// PROCEDURAL AUDIO SYNTHESIZER
+// ==========================================
+let audioCtx = null;
+let thwackBuffer, twangBuffer, bounceBuffer, spookBuffer, leafBuffer, nockBuffer, creakBuffer;
+
+function initAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const sr = audioCtx.sampleRate;
+  thwackBuffer = audioCtx.createBuffer(1, sr * 0.2, sr);
+  for(let i=0; i<sr*0.2; i++) thwackBuffer.getChannelData(0)[i] = (Math.random()*2-1) * Math.exp(-25 * (i/sr)) * 0.8;
+  bounceBuffer = audioCtx.createBuffer(1, sr * 0.3, sr);
+  for(let i=0; i<sr*0.3; i++) bounceBuffer.getChannelData(0)[i] = Math.sin(2 * Math.PI * 800 * (i/sr)) * Math.exp(-20 * (i/sr)) * 0.5 + (Math.random()*2-1) * Math.exp(-30 * (i/sr)) * 0.3;
+  twangBuffer = audioCtx.createBuffer(1, sr * 0.4, sr);
+  for(let i=0; i<sr*0.4; i++) twangBuffer.getChannelData(0)[i] = Math.sin(2 * Math.PI * (100 + Math.exp(-10 * (i/sr)) * 50) * (i/sr)) * Math.exp(-12 * (i/sr));
+  leafBuffer = audioCtx.createBuffer(1, sr * 0.15, sr);
+  for(let i=0; i<sr*0.15; i++) leafBuffer.getChannelData(0)[i] = (Math.random()*2-1) * Math.exp(-15 * (i/sr)) * 0.4;
+  spookBuffer = audioCtx.createBuffer(1, sr * 0.4, sr);
+  for(let i=0; i<sr*0.4; i++) spookBuffer.getChannelData(0)[i] = Math.sin(2 * Math.PI * 300 * (i/sr)) * Math.exp(-10 * (i/sr)) * 0.6;
+
+  // [FIX #12] Nock click sound — short percussive tap
+  nockBuffer = audioCtx.createBuffer(1, sr * 0.05, sr);
+  for(let i=0; i<sr*0.05; i++) nockBuffer.getChannelData(0)[i] = Math.sin(2 * Math.PI * 2000 * (i/sr)) * Math.exp(-60 * (i/sr)) * 0.4;
+
+  // [FIX #11] Creak sound for fatigue warning
+  creakBuffer = audioCtx.createBuffer(1, sr * 0.3, sr);
+  for(let i=0; i<sr*0.3; i++) {
+    const t = i/sr;
+    creakBuffer.getChannelData(0)[i] = Math.sin(2 * Math.PI * (80 + Math.sin(t * 40) * 30) * t) * Math.exp(-8 * t) * 0.3;
+  }
+}
+
+function playSound(buffer, volume = 0.5) {
+  if (!audioCtx || !buffer) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const source = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  source.buffer = buffer;
+  gain.gain.value = volume;
+  source.connect(gain);
+  gain.connect(audioCtx.destination);
+  source.start(0);
+}
+
+function pulseHaptic(controller, intensity = 0.5, durationMs = 50) {
+  if (controller && controller.xrInputSource && controller.xrInputSource.gamepad) {
+    const hapticActuator = controller.xrInputSource.gamepad.hapticActuators?.[0];
+    if (hapticActuator && hapticActuator.pulse) hapticActuator.pulse(intensity, durationMs);
+  }
+}
+
+// ==========================================
+// ARROW OBJECT POOL [FIX #3, #7]
+// ==========================================
+class ArrowPool {
+  constructor(scene, shaftGeo, tipGeo, shaftMat, tipMat, poolSize = 20) {
+    this.scene = scene;
+    this.pool = [];
+    this.active = [];
+
+    for (let i = 0; i < poolSize; i++) {
+      const group = this._createArrowGroup(shaftGeo, tipGeo, shaftMat, tipMat);
+      group.visible = false;
+      scene.add(group);
+      this.pool.push(group);
+    }
+  }
+
+  _createArrowGroup(shaftGeo, tipGeo, shaftMat, tipMat) {
+    const group = new THREE.Group();
+    const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+    shaft.position.z = 0.4; shaft.rotation.x = Math.PI / 2;
+    group.add(shaft);
+    const tip = new THREE.Mesh(tipGeo, tipMat);
+    tip.position.z = -0.02; tip.rotation.x = -Math.PI / 2;
+    group.add(tip);
+    return group;
+  }
+
+  acquire() {
+    let group = this.pool.pop();
+    if (!group) {
+      // Pool exhausted — recycle oldest active arrow
+      if (this.active.length > 0) {
+        const oldest = this.active.shift();
+        group = oldest.mesh;
+        group.parent?.remove(group);
+      } else {
+        return null;
+      }
+    }
+    group.visible = true;
+    this.scene.add(group);
+    return group;
+  }
+
+  release(arrowData) {
+    const group = arrowData.mesh;
+    // Detach from any parent (e.g. target it was stuck in)
+    if (group.parent && group.parent !== this.scene) {
+      group.parent.remove(group);
+      this.scene.add(group);
+    }
+    group.visible = false;
+    group.position.set(0, -100, 0);
+    group.quaternion.identity();
+    this.pool.push(group);
+  }
+}
+
+// ==========================================
+// SURVIVAL PHYSICS LAB
+// ==========================================
+class SurvivalLab extends xb.Script {
+  constructor() {
+    super();
+    this.arrows = [];
+    this.targets = [];
+    this.trees = [];
+    this.animals = [];
+    
+    // REAL WORLD PHYSICS TUNING
+    this.MAX_DRAW = 0.75;
+    this.SLIP_DISTANCE = 0.85;
+    this.MAX_VEL = 60.0;
+    this.GRAVITY = 9.81;
+    this.ARROW_MASS = 0.04;
+    this.BOW_EFFICIENCY = 0.75; // [FIX #13] Real recurve ~70-80% efficient
+
+    // [FIX #9] Aerodynamic drag constants
+    this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
+    this.ARROW_CD = 1.5;            // Drag coefficient (laminar regime)
+    this.ARROW_CROSS_AREA = 0.00005; // ~8mm diameter shaft cross-section m²
+    
+    this.bowAttached = false;
+    this.leftController = null;
+    this.rightController = null;
+    this.isDrawing = false;
+    this.drawDistance = 0;
+    this.fatigueTimer = 0.0;
+
+    // [FIX #2, #5] Pre-allocated temp objects — zero per-frame allocation
+    this._raycaster = new THREE.Raycaster();
+    this._tmpVec3A = new THREE.Vector3();
+    this._tmpVec3B = new THREE.Vector3();
+    this._tmpVec3C = new THREE.Vector3();
+    this._tmpQuat = new THREE.Quaternion();
+
+    // [FIX #4] Troika text batching
+    this._consoleDirty = false;
+
+    // [FIX #11] Fatigue audio cooldown
+    this._lastCreakTime = 0;
+  }
+
+  init() {
+    this.setupEnvironment();
+    this.setupVRConsole(); 
+    this.createSharedArrowAssets(); // [FIX #1]
+    this.createBow();
+    this.buildTestingZones();
+    this.labLog("System Initialized. Awaiting physical input...");
+  }
+
+  // [FIX #17] Dedicated log function — no global console.log override
+  labLog(msg) {
+    console.log(msg); // Still goes to browser devtools
+    const maxLogs = 15;
+    this.logs.push(`> ${msg}`);
+    if (this.logs.length > maxLogs) this.logs.shift();
+    this._consoleDirty = true; // [FIX #4] Defer sync to update()
+  }
+
+  setupVRConsole() {
+    this.consoleGroup = new THREE.Group();
+    this.consoleGroup.position.set(-4, 2, -4);
+    this.consoleGroup.rotation.y = Math.PI / 6; 
+    this.add(this.consoleGroup);
+
+    const bg = new THREE.Mesh(
+      new THREE.BoxGeometry(3, 2, 0.05),
+      new THREE.MeshBasicMaterial({color: 0x000000, opacity: 0.8, transparent: true})
+    );
+    this.consoleGroup.add(bg);
+
+    const title = new Text();
+    title.text = "VR SYSTEM CONSOLE";
+    title.fontSize = 0.1;
+    title.color = 0x4ade80;
+    title.position.set(-1.4, 0.85, 0.03);
+    this.consoleGroup.add(title);
+
+    this.consoleTextMesh = new Text();
+    this.consoleTextMesh.text = "";
+    this.consoleTextMesh.fontSize = 0.07;
+    this.consoleTextMesh.color = 0xffffff;
+    this.consoleTextMesh.position.set(-1.4, 0.65, 0.03);
+    this.consoleTextMesh.maxWidth = 2.8;
+    this.consoleTextMesh.lineHeight = 1.2;
+    this.consoleGroup.add(this.consoleTextMesh);
+
+    this.logs = [];
+  }
+
+  setupEnvironment() {
+    this.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.6));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+    dir.position.set(5, 10, 5);
+    this.add(dir);
+
+    // [FIX #8] MeshLambertMaterial for static scenery
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(50, 50),
+      new THREE.MeshLambertMaterial({ color: 0x334155 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    this.add(floor);
+
+    // [FIX #18] Reduced grid density
+    const gridHelper = new THREE.GridHelper(50, 10, 0x475569, 0x1e293b);
+    gridHelper.position.y = 0.01;
+    this.add(gridHelper);
+
+    this.panelGroup = new THREE.Group();
+    this.panelGroup.position.set(0, 2.0, -3.0);
+    this.add(this.panelGroup);
+    
+    this.hudText = new Text();
+    this.hudText.text = "SURVIVAL PHYSICS TESTBED\nLook left for Debug Console.";
+    this.hudText.fontSize = 0.1;
+    this.hudText.color = 0x38bdf8;
+    this.hudText.anchorX = 'center';
+    this.hudText.textAlign = 'center';
+    this.panelGroup.add(this.hudText);
+  }
+
+  // [FIX #1] Shared geometry and materials — created once, reused for all arrows
+  createSharedArrowAssets() {
+    this._arrowShaftGeo = new THREE.CylinderGeometry(0.004, 0.004, 0.8, 8);
+    this._arrowTipGeo = new THREE.ConeGeometry(0.008, 0.04, 8);
+    // [FIX #8] Lambert for arrows too
+    this._arrowShaftMat = new THREE.MeshLambertMaterial({ color: 0xe2e8f0 });
+    this._arrowTipMat = new THREE.MeshLambertMaterial({ color: 0x94a3b8 });
+  }
+
+  buildTestingZones() {
+    this.createTarget(-2, 1.0, -5, "Straw Target\nArmor: 15 J", 0xd4a373, 15);
+    this.createTarget(2, 1.0, -5, "Iron Target\nArmor: 65 J", 0x94a3b8, 65);
+    this.createTestTree(0, 0, -8);
+    this.createAnimal(3, 0, -10);
+    this.createAnimal(-3, 0, -10);
+  }
+
+  createTarget(x, y, z, labelStr, hexColor, armorVal) {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+    
+    const radius = 0.5;
+    // [FIX #8] Lambert for targets
+    const board = new THREE.Mesh(
+      new THREE.CylinderGeometry(radius, radius, 0.1, 32),
+      new THREE.MeshLambertMaterial({ color: hexColor })
+    );
+    board.rotateX(Math.PI / 2);
+    group.add(board);
+
+    const stand = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.05, y),
+      new THREE.MeshLambertMaterial({ color: 0x8b5a2b })
+    );
+    stand.position.y = -y / 2;
+    group.add(stand);
+
+    const label = new Text();
+    label.text = labelStr;
+    label.fontSize = 0.15;
+    label.color = 0xffffff;
+    label.position.set(0, radius + 0.2, 0);
+    label.anchorX = 'center';
+    label.textAlign = 'center';
+    group.add(label);
+
+    this.add(group);
+    // Store the face normal for this target (faces +Z in local space, rotated to world)
+    const faceNormal = new THREE.Vector3(0, 0, 1);
+    this.targets.push({ mesh: board, group: group, radius: radius, armor: armorVal, faceNormal: faceNormal });
+  }
+
+  createTestTree(x, y, z) {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+
+    const trunkHeight = 3.0;
+    const trunkRadius = 0.2;
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(trunkRadius, trunkRadius, trunkHeight, 8),
+      new THREE.MeshLambertMaterial({color: 0x3d2817})
+    );
+    trunk.position.y = trunkHeight / 2;
+    group.add(trunk);
+
+    const canopyRadius = 1.5;
+    const canopyHeight = 3.0;
+    const leaves = new THREE.Mesh(
+      new THREE.SphereGeometry(canopyRadius, 8, 8),
+      new THREE.MeshBasicMaterial({color: 0x22c55e, wireframe: true, transparent: true, opacity: 0.3})
+    );
+    leaves.position.y = trunkHeight;
+    group.add(leaves);
+
+    this.add(group);
+    this.trees.push({ x: x, z: z, trunkRadius: trunkRadius, trunkHeight: trunkHeight, canopyY: trunkHeight, canopyRadius: canopyRadius });
+  }
+
+  createAnimal(x, y, z) {
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.6, 0.8),
+      new THREE.MeshLambertMaterial({color: 0xa0522d})
+    );
+    body.position.y = 0.5;
+    group.add(body);
+    group.position.set(x, y, z);
+    this.add(group);
+
+    const label = new Text();
+    label.text = "Prey";
+    label.fontSize = 0.15;
+    label.color = 0x4ade80;
+    label.position.set(0, 1.2, 0);
+    label.anchorX = 'center';
+    group.add(label);
+
+    // [FIX #15] Animals have flee timer and origin for return
+    this.animals.push({
+      group: group,
+      state: 'IDLE',
+      label: label,
+      velocity: new THREE.Vector3(),
+      fleeTimer: 0,
+      origin: new THREE.Vector3(x, y, z)
+    });
+  }
+
+  createBow() {
+    this.bowGroup = new THREE.Group();
+    const curvePoints = [
+      new THREE.Vector3(0, 0.7, -0.1),
+      new THREE.Vector3(0, 0.3, 0.05),
+      new THREE.Vector3(0, -0.3, 0.05),
+      new THREE.Vector3(0, -0.7, -0.1)
+    ];
+    const curve = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curvePoints), 20, 0.015, 8, false);
+    this.bowGroup.add(new THREE.Mesh(curve, new THREE.MeshLambertMaterial({ color: 0x1a1a1a })));
+
+    const stringGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0.7, -0.1),
+      new THREE.Vector3(0, 0, -0.1),
+      new THREE.Vector3(0, -0.7, -0.1)
+    ]);
+    this.stringLine = new THREE.Line(stringGeo, new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 2}));
+    this.bowGroup.add(this.stringLine);
+
+    this.bowHud = new Text();
+    this.bowHud.fontSize = 0.03;
+    this.bowHud.color = 0x38bdf8;
+    this.bowHud.position.set(-0.05, 0, 0);
+    this.bowHud.rotation.y = -Math.PI / 2; 
+    this.bowHud.anchorX = 'right';
+    this.bowHud.anchorY = 'middle';
+    this.bowHud.text = "KE: 0\nFatigue: 0%";
+    this.bowGroup.add(this.bowHud);
+
+    // Loaded arrow visual uses shared geometry [FIX #1]
+    this.loadedArrow = new THREE.Group();
+    const shaft = new THREE.Mesh(this._arrowShaftGeo, this._arrowShaftMat);
+    shaft.position.z = 0.4; shaft.rotation.x = Math.PI / 2;
+    this.loadedArrow.add(shaft);
+    this.loadedArrow.visible = false;
+    this.bowGroup.add(this.loadedArrow);
+
+    this.bowGroup.position.set(0, 1.2, -0.5); 
+    this.add(this.bowGroup);
+
+    // [FIX #7] Create arrow pool after shared assets exist
+    this.arrowPool = new ArrowPool(this, this._arrowShaftGeo, this._arrowTipGeo, this._arrowShaftMat, this._arrowTipMat, 20);
+  }
+
+  onSelectStart(event) {
+    initAudio(); 
+    const ctrl = event.target;
+    const handedness = ctrl.xrInputSource?.handedness;
+
+    // [FIX C1] Use handedness exclusively when available
+    const isLeft = handedness === 'left' || (!handedness && ctrl === xb.core.input.controllers[0]);
+    const isRight = handedness === 'right' || (!handedness && ctrl === xb.core.input.controllers[1]);
+
+    if (isLeft && !this.bowAttached) {
+      ctrl.add(this.bowGroup);
+      this.bowGroup.position.set(0, 0, -0.05); 
+      this.bowGroup.rotation.set(0, 0, 0); 
+      this.leftController = ctrl;
+      this.bowAttached = true;
+      this.labLog("Bow attached to left hand.");
+
+      // [FIX #6] Listen for disconnect on this controller
+      ctrl.addEventListener('disconnected', () => this._onControllerDisconnect('left'));
+      return; 
+    }
+    if (isRight && this.bowAttached) {
+      // [FIX #4 string grab zone] Use radial distance check, not just z
+      const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(ctrl.matrixWorld);
+      const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
+      
+      const grabRadius = Math.sqrt(localRightHand.x * localRightHand.x + localRightHand.y * localRightHand.y + localRightHand.z * localRightHand.z);
+      if (grabRadius < 0.3 && localRightHand.z < 0.25) {
+          this.rightController = ctrl;
+          this.isDrawing = true;
+          this.loadedArrow.visible = true;
+
+          // [FIX #12] Nock feedback
+          playSound(nockBuffer, 0.6);
+          pulseHaptic(ctrl, 0.2, 30);
+
+          // [FIX #6] Listen for disconnect
+          ctrl.addEventListener('disconnected', () => this._onControllerDisconnect('right'));
+      } else {
+          this.labLog("[INPUT] Ignored: Hand too far to grab string.");
+      }
+    }
+  }
+
+  // [FIX #6] Controller disconnect handler
+  _onControllerDisconnect(hand) {
+    if (hand === 'right' && this.isDrawing) {
+      this.labLog("[WARN] Right controller disconnected during draw. Resetting.");
+      this.resetDrawState();
+    }
+    if (hand === 'left' && this.bowAttached) {
+      this.labLog("[WARN] Left controller disconnected. Detaching bow.");
+      this.bowGroup.parent?.remove(this.bowGroup);
+      this.add(this.bowGroup);
+      this.bowGroup.position.set(0, 1.2, -0.5);
+      this.bowAttached = false;
+      this.leftController = null;
+      this.resetDrawState();
+    }
+  }
+
+  onSelecting(event) {
+    if (this.isDrawing && event.target === this.rightController && this.bowAttached) {
+      // [FIX #5] Reuse pre-allocated vectors
+      const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(this.rightController.matrixWorld);
+      const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
+      
+      // AUTO-RELEASE CHECK
+      if (localRightHand.z > this.SLIP_DISTANCE) {
+          this.labLog(`[OVERDRAW] String slipped! Pulled past ${this.SLIP_DISTANCE}m.`);
+          this.executeFire();
+          this.resetDrawState();
+          return;
+      }
+
+      this.drawDistance = Math.max(0, Math.min(localRightHand.z, this.MAX_DRAW)); 
+      
+      const positions = this.stringLine.geometry.attributes.position.array;
+      positions[3] = localRightHand.x; 
+      positions[4] = localRightHand.y; 
+      positions[5] = this.drawDistance; 
+      this.stringLine.geometry.attributes.position.needsUpdate = true;
+      this.loadedArrow.position.set(0, 0, this.drawDistance - 0.8); 
+
+      const drawRatio = this.drawDistance / this.MAX_DRAW;
+      // [FIX #13] Apply bow efficiency to velocity calculation
+      const speed = this.MAX_VEL * drawRatio * Math.sqrt(this.BOW_EFFICIENCY);
+      const estKE = 0.5 * this.ARROW_MASS * (speed * speed);
+
+      if (drawRatio > 0.8) {
+        this.fatigueTimer += xb.getDeltaTime();
+      } else {
+        this.fatigueTimer = Math.max(0, this.fatigueTimer - xb.getDeltaTime() * 2);
+      }
+
+      let fatiguePercent = Math.min(100, (this.fatigueTimer / 3.0) * 100);
+      
+      // [FIX #11] Progressive fatigue feedback
+      const now = performance.now();
+      if (fatiguePercent >= 50 && fatiguePercent < 80) {
+        pulseHaptic(this.rightController, 0.1, 20);
+      } else if (fatiguePercent >= 80 && fatiguePercent < 100) {
+        pulseHaptic(this.rightController, 0.4, 30);
+        if (now - this._lastCreakTime > 800) {
+          playSound(creakBuffer, 0.4);
+          this._lastCreakTime = now;
+        }
+        this.bowHud.color = 0xfbbf24; // Yellow warning
+      }
+
+      if (fatiguePercent >= 100) {
+        pulseHaptic(this.rightController, 1.0, 50); 
+        this.bowHud.color = 0xef4444; // Red critical
+      } else if (fatiguePercent < 80) {
+        this.bowHud.color = 0x38bdf8; // Normal blue
+      }
+
+      this.bowHud.text = `KE: ${estKE.toFixed(0)} J\nFatigue: ${fatiguePercent.toFixed(0)}%`;
+    }
+  }
+
+  onSelectEnd(event) {
+    if (this.isDrawing && event.target === this.rightController) {
+      this.executeFire();
+      this.resetDrawState();
+    }
+  }
+
+  executeFire() {
+      if (this.drawDistance > 0.25) {
+        pulseHaptic(this.rightController, 1.0, 50); 
+        pulseHaptic(this.leftController, 0.8, 30);  
+
+        // [FIX #5] Reuse pre-allocated vectors
+        const tipLocal = this._tmpVec3A.set(0, 0, this.drawDistance - 0.8);
+        const spawnWorld = this.bowGroup.localToWorld(tipLocal.clone());
+        const forward = this._tmpVec3B.set(0, 0, -1).applyQuaternion(
+          this.bowGroup.getWorldQuaternion(this._tmpQuat)
+        );
+        
+        const drawRatio = this.drawDistance / this.MAX_DRAW;
+        // [FIX #13] Efficiency applied here too
+        const velocityMag = this.MAX_VEL * drawRatio * Math.sqrt(this.BOW_EFFICIENCY);
+        const estKE = 0.5 * this.ARROW_MASS * (velocityMag * velocityMag);
+        const velocityVec = forward.clone().multiplyScalar(velocityMag);
+        
+        let wobbleApplied = false;
+        if (this.fatigueTimer >= 3.0) {
+            const wobble = Math.min(1.0, (this.fatigueTimer - 3.0) / 2.0); 
+            velocityVec.x += (Math.random() - 0.5) * 6.0 * wobble;
+            velocityVec.y += (Math.random() - 0.5) * 6.0 * wobble;
+            velocityVec.z += (Math.random() - 0.5) * 6.0 * wobble;
+            wobbleApplied = true;
+        }
+
+        this.labLog(`[FIRE] V: ${velocityMag.toFixed(1)}m/s | KE: ${estKE.toFixed(1)}J | Eff: ${(this.BOW_EFFICIENCY*100).toFixed(0)}% | Wobble: ${wobbleApplied}`);
+
+        this.fireArrow(spawnWorld, velocityVec, this.bowGroup.getWorldQuaternion(this._tmpQuat.clone()));
+      } else {
+        this.labLog(`[FIRE] Canceled: Draw too weak (${this.drawDistance.toFixed(2)}m). Needs 0.25m`);
+      }
+  }
+
+  resetDrawState() {
+      this.isDrawing = false;
+      this.loadedArrow.visible = false;
+      const positions = this.stringLine.geometry.attributes.position.array;
+      positions[3] = 0;
+      positions[4] = 0;
+      positions[5] = -0.1;
+      this.stringLine.geometry.attributes.position.needsUpdate = true;
+      this.bowHud.text = "KE: 0 J\nFatigue: 0%";
+      this.bowHud.color = 0x38bdf8;
+      this.drawDistance = 0;
+      this.fatigueTimer = 0;
+  }
+
+  fireArrow(startPos, velocityVector, orientation) {
+    // [FIX #7] Use object pool instead of creating new meshes
+    const group = this.arrowPool.acquire();
+    if (!group) {
+      this.labLog("[WARN] Arrow pool exhausted.");
+      return;
+    }
+    
+    group.position.copy(startPos);
+    group.quaternion.copy(orientation);
+
+    const arrowData = {
+      mesh: group,
+      velocity: velocityVector.clone(),
+      active: true,
+      deflected: false,
+      life: 6.0
+    };
+
+    this.arrows.push(arrowData);
+    this.arrowPool.active.push(arrowData);
+    
+    playSound(twangBuffer, 0.8);
+  }
+
+  triggerSoundEvent(origin, radius) {
+    const ripple = new THREE.Mesh(
+      new THREE.RingGeometry(radius-0.1, radius, 32),
+      new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide})
+    );
+    ripple.rotation.x = -Math.PI/2;
+    ripple.position.copy(origin);
+    ripple.position.y = 0.1;
+    this.add(ripple);
+    setTimeout(() => {
+      this.remove(ripple);
+      ripple.geometry.dispose();
+      ripple.material.dispose();
+    }, 200);
+
+    let spookCount = 0;
+    this.animals.forEach(animal => {
+        if (animal.state === 'IDLE' && animal.group.position.distanceTo(origin) <= radius) {
+            animal.state = 'FLEE';
+            animal.fleeTimer = 0; // [FIX #15] Reset flee timer
+            animal.label.text = "SPOOKED!";
+            animal.label.color = 0xef4444;
+            playSound(spookBuffer, 1.0);
+            animal.velocity.subVectors(animal.group.position, origin).normalize().multiplyScalar(6.0);
+            spookCount++;
+        }
+    });
+    if (spookCount > 0) this.labLog(`[ACOUSTIC] Sound radius ${radius}m spooked ${spookCount} animals.`);
+  }
+
+  updateArrows(dt) {
+    const gravityVec = this._tmpVec3C.set(0, -this.GRAVITY, 0);
+
+    for (let i = this.arrows.length - 1; i >= 0; i--) {
+      const arrow = this.arrows[i];
+      if (!arrow.active) continue;
+
+      arrow.life -= dt;
+      if (arrow.life <= 0 || arrow.mesh.position.y <= -0.5) {
+        if (arrow.mesh.position.y <= -0.5 && arrow.active) {
+            this.triggerSoundEvent(arrow.mesh.position, 5.0); 
+        }
+        // [FIX #7] Release back to pool
+        this.arrowPool.release(arrow);
+        this.arrows.splice(i, 1);
+        const poolIdx = this.arrowPool.active.indexOf(arrow);
+        if (poolIdx !== -1) this.arrowPool.active.splice(poolIdx, 1);
+        continue;
+      }
+
+      const prevPos = this._tmpVec3A.copy(arrow.mesh.position);
+      
+      // [FIX #9] Aerodynamic drag: F_drag = -½ρCdAv²  →  a_drag = F/m
+      const speedSq = arrow.velocity.lengthSq();
+      if (speedSq > 0.01) {
+        const speed = Math.sqrt(speedSq);
+        const dragMag = 0.5 * this.AIR_DENSITY * this.ARROW_CD * this.ARROW_CROSS_AREA * speedSq;
+        const dragAccel = dragMag / this.ARROW_MASS;
+        // Drag opposes velocity direction
+        const dragVec = this._tmpVec3B.copy(arrow.velocity).normalize().multiplyScalar(-dragAccel * dt);
+        arrow.velocity.add(dragVec);
+      }
+
+      arrow.velocity.addScaledVector(gravityVec, dt); 
+      arrow.mesh.position.addScaledVector(arrow.velocity, dt);
+      
+      if (arrow.velocity.lengthSq() > 0.01) {
+         arrow.mesh.lookAt(arrow.mesh.position.clone().add(arrow.velocity));
+      }
+
+      const stepDist = prevPos.distanceTo(arrow.mesh.position);
+      const flightDir = this._tmpVec3B.copy(arrow.velocity).normalize();
+
+      // [FIX #2] Reuse cached raycaster
+      this._raycaster.set(prevPos, flightDir);
+      this._raycaster.near = 0;
+      this._raycaster.far = stepDist;
+
+      let hitTrunk = false;
+      for (const tree of this.trees) {
+        if (!arrow.deflected) {
+            const distToCanopy = arrow.mesh.position.distanceTo(
+              this._tmpVec3A.set(tree.x, tree.canopyY, tree.z)
+            );
+            if (distToCanopy < tree.canopyRadius) {
+                arrow.deflected = true;
+                playSound(leafBuffer, 0.8);
+
+                // [FIX #10] Anisotropic foliage deflection — primarily forward with lateral scatter
+                const fwd = this._tmpVec3A.copy(arrow.velocity).normalize();
+                const forwardSpeed = arrow.velocity.length() * 0.5; // Lose 50% forward speed
+                arrow.velocity.copy(fwd).multiplyScalar(forwardSpeed);
+                // Add small lateral scatter perpendicular to flight
+                arrow.velocity.x += (Math.random() - 0.5) * 3.0;
+                arrow.velocity.y += (Math.random() - 0.5) * 2.0;
+                // Minimal forward scatter — the arrow doesn't reverse
+                arrow.velocity.z += (Math.random() - 0.5) * 1.5;
+
+                this.labLog("[DEFLECTION] Arrow hit foliage. Trajectory deflected.");
+            }
+        }
+
+        if (arrow.mesh.position.y < tree.trunkHeight && 
+            Math.hypot(arrow.mesh.position.x - tree.x, arrow.mesh.position.z - tree.z) < tree.trunkRadius + 0.05) {
+          arrow.active = false;
+          hitTrunk = true;
+          playSound(bounceBuffer, 0.6); 
+          pulseHaptic(this.leftController, 0.2, 10);
+          this.labLog("[IMPACT] Hit Tree Trunk. Arrow stopped.");
+          this.triggerSoundEvent(arrow.mesh.position, 15.0); 
+          break; 
+        }
+      }
+      if (hitTrunk) continue;
+
+      let hitTarget = null;
+      let minDistance = Infinity;
+
+      this.targets.forEach(t => {
+        const intersects = this._raycaster.intersectObject(t.mesh);
+        if (intersects.length > 0 && intersects[0].distance < minDistance) {
+          hitTarget = { mesh: t.mesh, point: intersects[0].point, armor: t.armor, faceNormal: t.faceNormal };
+          minDistance = intersects[0].distance;
+        }
+      });
+
+      if (hitTarget) {
+        const currentKE = 0.5 * this.ARROW_MASS * arrow.velocity.lengthSq();
+        
+        if (currentKE >= hitTarget.armor) {
+            arrow.active = false;
+            playSound(thwackBuffer, 1.0);
+            pulseHaptic(this.leftController, 0.3, 20);
+            
+            const embedMeters = Math.min(0.4, (currentKE - hitTarget.armor) * 0.001 + 0.05);
+            arrow.mesh.position.copy(hitTarget.point).addScaledVector(flightDir, embedMeters);
+            hitTarget.mesh.attach(arrow.mesh);
+            this.labLog(`[IMPACT] STICK: KE ${currentKE.toFixed(0)}J > Armor ${hitTarget.armor}J`);
+            this.triggerSoundEvent(hitTarget.point, 5.0); 
+        } else {
+            playSound(bounceBuffer, 1.0);
+            pulseHaptic(this.leftController, 0.5, 30);
+            
+            // [FIX #5] Proper surface-normal reflection: v' = v - 2(v·n)n * restitution
+            const normal = this._tmpVec3A.copy(hitTarget.faceNormal);
+            // Transform face normal to world space using the target mesh's world quaternion
+            hitTarget.mesh.getWorldQuaternion(this._tmpQuat);
+            normal.applyQuaternion(this._tmpQuat);
+
+            const dot = arrow.velocity.dot(normal);
+            const restitution = 0.3;
+            arrow.velocity.addScaledVector(normal, -2 * dot * restitution);
+            // Add small random scatter for realism
+            arrow.velocity.x += (Math.random() - 0.5) * 2;
+            arrow.velocity.y += (Math.random() - 0.5) * 2;
+            
+            this.labLog(`[IMPACT] BOUNCE: KE ${currentKE.toFixed(0)}J < Armor ${hitTarget.armor}J`);
+            this.triggerSoundEvent(hitTarget.point, 20.0); 
+        }
+      }
+    }
+  }
+
+  update() {
+    const dt = xb.getDeltaTime();
+
+    if (!this.bowAttached && xb.core.input.controllers.length > 0) {
+      const ctrl = xb.core.input.controllers[0];
+      ctrl.add(this.bowGroup);
+      this.bowGroup.position.set(0, 0, -0.05); 
+      this.bowGroup.rotation.set(0, 0, 0); 
+      this.leftController = ctrl;
+      this.bowAttached = true;
+    }
+
+    // [FIX #15] Animal state machine with flee timer + return
+    this.animals.forEach(a => {
+        if (a.state === 'FLEE') {
+            a.fleeTimer += dt;
+            a.group.position.addScaledVector(a.velocity, dt);
+            a.group.lookAt(a.group.position.clone().add(a.velocity));
+            a.group.position.y = Math.abs(Math.sin(a.fleeTimer * 10)) * 0.4; // Use timer, not performance.now
+
+            // Decelerate over time
+            a.velocity.multiplyScalar(1 - dt * 0.5);
+
+            // After 6 seconds, transition to RETURNING
+            if (a.fleeTimer > 6.0) {
+              a.state = 'RETURNING';
+              a.label.text = "Returning...";
+              a.label.color = 0xfbbf24;
+            }
+        } else if (a.state === 'RETURNING') {
+            // Walk back toward origin
+            const toOrigin = this._tmpVec3A.copy(a.origin).sub(a.group.position);
+            const dist = toOrigin.length();
+            if (dist < 0.3) {
+              a.state = 'IDLE';
+              a.group.position.copy(a.origin);
+              a.label.text = "Prey";
+              a.label.color = 0x4ade80;
+            } else {
+              toOrigin.normalize().multiplyScalar(2.0); // Walk speed
+              a.group.position.addScaledVector(toOrigin, dt);
+              a.group.lookAt(a.origin);
+              a.group.position.y = 0;
+            }
+        }
+    });
+
+    this.updateArrows(dt);
+
+    // [FIX #4] Batch Troika text sync — once per frame max
+    if (this._consoleDirty) {
+      this.consoleTextMesh.text = this.logs.join('\n');
+      this.consoleTextMesh.sync();
+      this._consoleDirty = false;
+    }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async function () {
+  const options = new xb.Options();
+  options.setAppTitle('Survival Physics Lab');
+  options.enableXRTransitions();
+
+  options.xrButton = {
+    ...options.xrButton,
+    startText: '<i id="xrlogo"></i> ENTER SURVIVAL LAB',
+  };
+
+  xb.add(new SurvivalLab());
+  await xb.init(options);
+});
+    </script>
+  </body>
+</html>
