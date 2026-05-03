@@ -865,18 +865,18 @@ class SurvivalLab extends xb.Script {
   createBow() {
     this.bowGroup = new THREE.Group();
     const curvePoints = [
-      new THREE.Vector3(0, 0.7, -0.1),
-      new THREE.Vector3(0, 0.3, 0.05),
-      new THREE.Vector3(0, -0.3, 0.05),
-      new THREE.Vector3(0, -0.7, -0.1)
+      new THREE.Vector3(0,  0.7,  0),     // top tip — at brace plane
+      new THREE.Vector3(0,  0.3, -0.15),  // upper limb bulges toward target
+      new THREE.Vector3(0, -0.3, -0.15),  // lower limb bulges toward target
+      new THREE.Vector3(0, -0.7,  0)      // bottom tip — at brace plane
     ];
     const curve = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curvePoints), 20, 0.015, 8, false);
     this.bowGroup.add(new THREE.Mesh(curve, new THREE.MeshLambertMaterial({ color: 0x1a1a1a })));
 
     const stringGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 0.7, -0.1),
-      new THREE.Vector3(0, 0, -0.1),
-      new THREE.Vector3(0, -0.7, -0.1)
+      new THREE.Vector3(0,  0.7, 0),
+      new THREE.Vector3(0,  0,   0),  // string brace mid — at archer side of riser
+      new THREE.Vector3(0, -0.7, 0)
     ]);
     this.stringLine = new THREE.Line(stringGeo, new THREE.LineBasicMaterial({color: 0xffffff, linewidth: 2}));
     this.bowGroup.add(this.stringLine);
@@ -979,22 +979,50 @@ class SurvivalLab extends xb.Script {
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(this.rightController.matrixWorld);
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
 
-      // AUTO-RELEASE CHECK
-      if (localRightHand.z > this.SLIP_DISTANCE) {
+      // Radial draw: distance from brace centre, not just z component.
+      const handRadial = localRightHand.length();
+
+      // AUTO-RELEASE CHECK — based on radial pull magnitude
+      if (handRadial > this.SLIP_DISTANCE) {
           this.labLog(`[OVERDRAW] String slipped! Pulled past ${this.SLIP_DISTANCE}m.`);
           this.executeFire();
           this.resetDrawState();
           return;
       }
 
-      this.drawDistance = Math.max(0, Math.min(localRightHand.z, this.MAX_DRAW));
+      // Only count as drawing if hand is on the archer side of the brace plane.
+      if (localRightHand.z <= 0) {
+        this.drawDistance = 0;
+      } else {
+        this.drawDistance = Math.min(handRadial, this.MAX_DRAW);
+      }
 
+      // String visual: apex follows the right hand (clamped to MAX_DRAW radius).
+      const apex = localRightHand.clone();
+      const apexLen = apex.length();
+      if (apexLen > this.MAX_DRAW && apexLen > 0.0001) {
+        apex.multiplyScalar(this.MAX_DRAW / apexLen);
+      }
       const positions = this.stringLine.geometry.attributes.position.array;
-      positions[3] = localRightHand.x;
-      positions[4] = localRightHand.y;
-      positions[5] = this.drawDistance;
+      positions[3] = apex.x;
+      positions[4] = apex.y;
+      positions[5] = apex.z;
       this.stringLine.geometry.attributes.position.needsUpdate = true;
-      this.loadedArrow.position.set(0, 0, this.drawDistance - 0.8);
+
+      // Loaded arrow visual follows the actual nock→rest line so off-axis
+      // pulls show the arrow misaligned. Tremor adds a small extra rotation.
+      const apexLenC = apex.length();
+      if (apexLenC < 0.001) {
+        this.loadedArrow.position.set(0, 0, -0.8);
+        this.loadedArrow.quaternion.identity();
+      } else {
+        const arrowDir = apex.clone().multiplyScalar(1 / apexLenC); // tip→nock
+        const tipPos = apex.clone().sub(arrowDir.clone().multiplyScalar(0.8));
+        this.loadedArrow.position.copy(tipPos);
+        this.loadedArrow.quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 0, 1), arrowDir
+        );
+      }
 
       const dt = xb.getDeltaTime();
       const drawRatio = this.drawDistance / this.MAX_DRAW;
@@ -1010,9 +1038,12 @@ class SurvivalLab extends xb.Script {
         this.holdSeconds = Math.max(0, this.holdSeconds - dt * 2);
       }
 
-      // Procedural hold tremor: visible wobble on the loaded arrow
+      // Procedural hold tremor: composed on top of off-axis orientation.
       this._updateTremor(dt, drawRatio);
-      this.loadedArrow.rotation.set(this._tremorPitch, this._tremorYaw, 0);
+      const tremorQ = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(this._tremorPitch, this._tremorYaw, 0, 'XYZ')
+      );
+      this.loadedArrow.quaternion.multiply(tremorQ);
 
       // Extra haptic kick when entering the stack region
       if (drawRatio > this.STACK_THRESHOLD) {
@@ -1064,28 +1095,43 @@ class SurvivalLab extends xb.Script {
         pulseHaptic(this.rightController, 1.0, 50);
         pulseHaptic(this.leftController, 0.8, 30);
 
-        // [FIX #5] Reuse pre-allocated vectors
-        const tipLocal = this._tmpVec3A.set(0, 0, this.drawDistance - 0.8);
-        const spawnWorld = this.bowGroup.localToWorld(tipLocal.clone());
-
-        // Anchor consistency: capture right hand in bow-local space.
+        // Capture nock position (right hand) in bow-local space.
         const rightHandWorld = this._tmpVec3C.setFromMatrixPosition(this.rightController.matrixWorld);
-        const anchorLocal = this.bowGroup.worldToLocal(rightHandWorld.clone());
-        const anchorScatter = this._anchorScatter(anchorLocal);
-        this._recordAnchor(anchorLocal);
+        const apex = this.bowGroup.worldToLocal(rightHandWorld.clone());
+        const apexLen = apex.length();
+        if (apexLen > this.MAX_DRAW && apexLen > 0.0001) {
+          apex.multiplyScalar(this.MAX_DRAW / apexLen);
+        }
+        const apexLenC = apex.length();
+
+        // Anchor consistency
+        const anchorScatter = this._anchorScatter(apex);
+        this._recordAnchor(apex);
+
+        // Arrow flies along nock→rest line, extended forward.
+        // Local firing direction = -apex.normalize().  Spawn at the tip end
+        // of the loaded arrow = apex + 0.8 * (firing dir).
+        const localDir = apexLenC > 0.0001
+          ? apex.clone().multiplyScalar(-1 / apexLenC)
+          : new THREE.Vector3(0, 0, -1);
+        const tipLocal = apex.clone().addScaledVector(localDir, 0.8);
+        const spawnWorld = this.bowGroup.localToWorld(tipLocal.clone());
 
         const drawRatio = this.drawDistance / this.MAX_DRAW;
         const velocityMag = this._drawSpeed(drawRatio);
         const estKE = 0.5 * this.ARROW_MASS * velocityMag * velocityMag;
 
-        // Build firing direction in bow-local space, apply tremor + anchor scatter,
+        // Apply tremor + anchor scatter as bow-local angular perturbation,
         // then transform to world.
         const yawErr = this._tremorYaw + (Math.random() - 0.5) * 2 * anchorScatter;
         const pitchErr = this._tremorPitch + (Math.random() - 0.5) * anchorScatter;
-        const dir = this._tmpVec3B.set(0, 0, -1);
+        const dir = localDir.clone();
         dir.applyEuler(this._tmpEuler.set(pitchErr, yawErr, 0, 'XYZ'));
         dir.applyQuaternion(this.bowGroup.getWorldQuaternion(this._tmpQuat));
         const velocityVec = dir.clone().multiplyScalar(velocityMag);
+
+        // Lateral pull amount (degrees off bow forward) for diagnostics.
+        const offAxisDeg = Math.acos(Math.min(1, Math.max(-1, -localDir.z))) * 180 / Math.PI;
 
         let wobbleApplied = false;
         if (this.fatigueTimer >= 3.0) {
@@ -1098,7 +1144,7 @@ class SurvivalLab extends xb.Script {
 
         const tremorDeg = (Math.hypot(this._tremorYaw, this._tremorPitch) * 180 / Math.PI).toFixed(1);
         const scatterDeg = (anchorScatter * 180 / Math.PI).toFixed(1);
-        this.labLog(`[FIRE] V: ${velocityMag.toFixed(1)}m/s | KE: ${estKE.toFixed(1)}J | Tremor: ${tremorDeg}° | Anchor: ${scatterDeg}° | Wobble: ${wobbleApplied}`);
+        this.labLog(`[FIRE] V: ${velocityMag.toFixed(1)}m/s | KE: ${estKE.toFixed(1)}J | OffAxis: ${offAxisDeg.toFixed(1)}° | Tremor: ${tremorDeg}° | Anchor: ${scatterDeg}°${wobbleApplied ? ' | FATIGUE' : ''}`);
 
         this.fireArrow(spawnWorld, velocityVec, this.bowGroup.getWorldQuaternion(this._tmpQuat.clone()));
       } else {
@@ -1113,7 +1159,7 @@ class SurvivalLab extends xb.Script {
       const positions = this.stringLine.geometry.attributes.position.array;
       positions[3] = 0;
       positions[4] = 0;
-      positions[5] = -0.1;
+      positions[5] = 0;
       this.stringLine.geometry.attributes.position.needsUpdate = true;
       this.bowHud.text = "KE: 0 J\nFatigue: 0%";
       this.bowHud.color = 0x38bdf8;
