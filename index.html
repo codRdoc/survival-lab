@@ -120,6 +120,11 @@ import { Text } from 'troika-three-text';
 let audioCtx = null;
 let thwackBuffer, twangBuffer, bounceBuffer, spookBuffer, leafBuffer, nockBuffer, creakBuffer;
 
+// Settings-controlled global state
+let masterVolume = 0.7;
+let muted = false;
+let hapticsEnabled = true;
+
 function initAudio() {
   if (audioCtx) return;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -148,18 +153,19 @@ function initAudio() {
 }
 
 function playSound(buffer, volume = 0.5) {
-  if (!audioCtx || !buffer) return;
+  if (!audioCtx || !buffer || muted) return;
   if (audioCtx.state === 'suspended') audioCtx.resume();
   const source = audioCtx.createBufferSource();
   const gain = audioCtx.createGain();
   source.buffer = buffer;
-  gain.gain.value = volume;
+  gain.gain.value = volume * masterVolume;
   source.connect(gain);
   gain.connect(audioCtx.destination);
   source.start(0);
 }
 
 function pulseHaptic(controller, intensity = 0.5, durationMs = 50) {
+  if (!hapticsEnabled) return;
   if (controller && controller.xrInputSource && controller.xrInputSource.gamepad) {
     const hapticActuator = controller.xrInputSource.gamepad.hapticActuators?.[0];
     if (hapticActuator && hapticActuator.pulse) hapticActuator.pulse(intensity, durationMs);
@@ -226,6 +232,257 @@ class ArrowPool {
 }
 
 // ==========================================
+// IN-XR SETTINGS PANEL
+// ==========================================
+class SettingsPanel {
+  constructor(parent, lab) {
+    this.lab = lab;
+    this.group = new THREE.Group();
+    this.group.position.set(4, 1.6, -4);
+    this.group.rotation.y = -Math.PI / 6;
+    parent.add(this.group);
+
+    this.buttons = [];
+    this.rowSyncs = [];
+
+    this._raycaster = new THREE.Raycaster();
+    this._tmpV = new THREE.Vector3();
+    this._tmpQ = new THREE.Quaternion();
+
+    this._build();
+  }
+
+  _build() {
+    const W = 3.6, H = 4.8;
+    const bg = new THREE.Mesh(
+      new THREE.PlaneGeometry(W, H),
+      new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.85, transparent: true })
+    );
+    bg.position.z = -0.01;
+    this.group.add(bg);
+
+    const title = new Text();
+    title.text = "SETTINGS";
+    title.fontSize = 0.14;
+    title.color = 0x4ade80;
+    title.anchorX = 'center';
+    title.anchorY = 'middle';
+    title.position.set(0, H / 2 - 0.2, 0);
+    this.group.add(title);
+
+    let y = H / 2 - 0.5;
+    const rowH = 0.18;
+
+    const addHeader = (text) => {
+      const t = new Text();
+      t.text = text;
+      t.fontSize = 0.075;
+      t.color = 0x38bdf8;
+      t.anchorX = 'left';
+      t.anchorY = 'middle';
+      t.position.set(-W / 2 + 0.1, y, 0);
+      this.group.add(t);
+      y -= rowH * 0.9;
+    };
+
+    const addSlider = (label, getter, setter, min, max, step, format) => {
+      format = format || (v => v.toFixed(2));
+      const lbl = new Text();
+      lbl.text = label;
+      lbl.fontSize = 0.07;
+      lbl.color = 0xe5e7eb;
+      lbl.anchorX = 'left';
+      lbl.anchorY = 'middle';
+      lbl.position.set(-W / 2 + 0.18, y, 0);
+      this.group.add(lbl);
+
+      const val = new Text();
+      val.text = format(getter());
+      val.fontSize = 0.07;
+      val.color = 0xfbbf24;
+      val.anchorX = 'center';
+      val.anchorY = 'middle';
+      val.position.set(0.7, y, 0);
+      this.group.add(val);
+
+      const btnGeo = new THREE.PlaneGeometry(0.16, 0.13);
+      const minusBtn = new THREE.Mesh(btnGeo, new THREE.MeshBasicMaterial({ color: 0x334155 }));
+      minusBtn.position.set(1.15, y, 0);
+      const plusBtn = new THREE.Mesh(btnGeo, new THREE.MeshBasicMaterial({ color: 0x334155 }));
+      plusBtn.position.set(1.4, y, 0);
+      this.group.add(minusBtn, plusBtn);
+
+      const minusLbl = new Text();
+      minusLbl.text = "-";
+      minusLbl.fontSize = 0.11;
+      minusLbl.color = 0xffffff;
+      minusLbl.anchorX = 'center';
+      minusLbl.anchorY = 'middle';
+      minusLbl.position.set(1.15, y, 0.001);
+      this.group.add(minusLbl);
+
+      const plusLbl = new Text();
+      plusLbl.text = "+";
+      plusLbl.fontSize = 0.11;
+      plusLbl.color = 0xffffff;
+      plusLbl.anchorX = 'center';
+      plusLbl.anchorY = 'middle';
+      plusLbl.position.set(1.4, y, 0.001);
+      this.group.add(plusLbl);
+
+      const sync = () => { val.text = format(getter()); val.sync(); };
+      this.rowSyncs.push(sync);
+
+      this.buttons.push({
+        mesh: minusBtn,
+        action: () => { setter(Math.max(min, getter() - step)); sync(); }
+      });
+      this.buttons.push({
+        mesh: plusBtn,
+        action: () => { setter(Math.min(max, getter() + step)); sync(); }
+      });
+
+      y -= rowH;
+    };
+
+    const addToggle = (label, getter, setter) => {
+      const lbl = new Text();
+      lbl.text = label;
+      lbl.fontSize = 0.07;
+      lbl.color = 0xe5e7eb;
+      lbl.anchorX = 'left';
+      lbl.anchorY = 'middle';
+      lbl.position.set(-W / 2 + 0.18, y, 0);
+      this.group.add(lbl);
+
+      const btn = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.55, 0.13),
+        new THREE.MeshBasicMaterial({ color: getter() ? 0x10b981 : 0x6b7280 })
+      );
+      btn.position.set(1.25, y, 0);
+      this.group.add(btn);
+
+      const txt = new Text();
+      txt.text = getter() ? "ON" : "OFF";
+      txt.fontSize = 0.075;
+      txt.color = 0xffffff;
+      txt.anchorX = 'center';
+      txt.anchorY = 'middle';
+      txt.position.set(1.25, y, 0.001);
+      this.group.add(txt);
+
+      const sync = () => {
+        const v = getter();
+        btn.material.color.setHex(v ? 0x10b981 : 0x6b7280);
+        txt.text = v ? "ON" : "OFF";
+        txt.sync();
+      };
+      this.rowSyncs.push(sync);
+
+      this.buttons.push({
+        mesh: btn,
+        action: () => { setter(!getter()); sync(); }
+      });
+
+      y -= rowH;
+    };
+
+    const addAction = (label, color, fn) => {
+      const btn = new THREE.Mesh(
+        new THREE.PlaneGeometry(W - 0.4, 0.15),
+        new THREE.MeshBasicMaterial({ color: color })
+      );
+      btn.position.set(0, y, 0);
+      this.group.add(btn);
+
+      const txt = new Text();
+      txt.text = label;
+      txt.fontSize = 0.08;
+      txt.color = 0xffffff;
+      txt.anchorX = 'center';
+      txt.anchorY = 'middle';
+      txt.position.set(0, y, 0.001);
+      this.group.add(txt);
+
+      this.buttons.push({ mesh: btn, action: fn });
+      y -= rowH + 0.02;
+    };
+
+    const lab = this.lab;
+
+    addHeader("- PHYSICS -");
+    addSlider("Gravity (m/s2)",  () => lab.GRAVITY,        v => lab.GRAVITY = v,        0,    25,   0.5,  v => v.toFixed(1));
+    addSlider("Max Velocity",    () => lab.MAX_VEL,        v => lab.MAX_VEL = v,        10,   120,  5,    v => v.toFixed(0));
+    addSlider("Bow Efficiency",  () => lab.BOW_EFFICIENCY, v => lab.BOW_EFFICIENCY = v, 0.1,  1.0,  0.05);
+    addSlider("Arrow Mass (kg)", () => lab.ARROW_MASS,     v => lab.ARROW_MASS = v,     0.01, 0.2,  0.01);
+    addSlider("Drag Coeff",      () => lab.ARROW_CD,       v => lab.ARROW_CD = v,       0,    3,    0.1,  v => v.toFixed(1));
+
+    addHeader("- BOW -");
+    addSlider("Max Draw (m)",    () => lab.MAX_DRAW,       v => lab.MAX_DRAW = v,       0.4,  1.0,  0.05);
+    addSlider("Slip Dist (m)",   () => lab.SLIP_DISTANCE,  v => lab.SLIP_DISTANCE = v,  0.5,  1.2,  0.05);
+
+    addHeader("- AUDIO -");
+    addSlider("Volume",          () => masterVolume,       v => { masterVolume = v; },  0,    1,    0.1,  v => v.toFixed(1));
+    addToggle("Muted",           () => muted,              v => { muted = v; });
+
+    addHeader("- FEEDBACK -");
+    addToggle("Haptics",         () => hapticsEnabled,     v => { hapticsEnabled = v; });
+    addToggle("Debug Console",   () => lab.consoleGroup.visible, v => { lab.consoleGroup.visible = v; });
+
+    addHeader("- WORLD -");
+    addAction("Reset Arrows",    0xef4444, () => lab.resetArrows());
+    addAction("Respawn Animals", 0x10b981, () => lab.respawnAnimals());
+
+    addHeader("- MODE (next session) -");
+    addToggle("AR Passthrough",
+      () => window.xrMode === 'immersive-ar',
+      v => {
+        window.xrMode = v ? 'immersive-ar' : 'immersive-vr';
+        const btnVR = document.getElementById('btn-vr');
+        const btnAR = document.getElementById('btn-ar');
+        const label = document.getElementById('mode-label');
+        if (btnVR && btnAR && label) {
+          if (v) {
+            btnAR.classList.add('active'); btnVR.classList.remove('active');
+            label.textContent = 'Passthrough — see your room';
+          } else {
+            btnVR.classList.add('active'); btnAR.classList.remove('active');
+            label.textContent = 'Fully immersive';
+          }
+        }
+        lab.labLog(`[MODE] Set ${v ? 'AR' : 'VR'} for next session.`);
+      }
+    );
+  }
+
+  refresh() {
+    for (const s of this.rowSyncs) s();
+  }
+
+  tryClick(controller) {
+    const origin = this._tmpV.setFromMatrixPosition(controller.matrixWorld).clone();
+    const q = controller.getWorldQuaternion(this._tmpQ);
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+    this._raycaster.set(origin, dir);
+    this._raycaster.near = 0;
+    this._raycaster.far = 10;
+
+    const meshes = this.buttons.map(b => b.mesh);
+    const hits = this._raycaster.intersectObjects(meshes, false);
+    if (hits.length > 0) {
+      const btn = this.buttons.find(b => b.mesh === hits[0].object);
+      if (btn) {
+        btn.action();
+        playSound(nockBuffer, 0.5);
+        pulseHaptic(controller, 0.4, 30);
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+// ==========================================
 // SURVIVAL PHYSICS LAB
 // ==========================================
 class SurvivalLab extends xb.Script {
@@ -276,7 +533,47 @@ class SurvivalLab extends xb.Script {
     this.createSharedArrowAssets(); // [FIX #1]
     this.createBow();
     this.buildTestingZones();
+    this.setupSettingsPanel();
+    this.setupPointerRay();
     this.labLog("System Initialized. Awaiting physical input...");
+  }
+
+  setupSettingsPanel() {
+    this.settings = new SettingsPanel(this, this);
+  }
+
+  setupPointerRay() {
+    const geo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -3)
+    ]);
+    this.pointerRay = new THREE.Line(
+      geo,
+      new THREE.LineBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.5 })
+    );
+    this.pointerRay.visible = false;
+    this.add(this.pointerRay);
+  }
+
+  resetArrows() {
+    for (const a of this.arrows) {
+      this.arrowPool.release(a);
+    }
+    this.arrows.length = 0;
+    this.arrowPool.active.length = 0;
+    this.labLog("[ACTION] All arrows cleared.");
+  }
+
+  respawnAnimals() {
+    for (const a of this.animals) {
+      a.state = 'IDLE';
+      a.group.position.copy(a.origin);
+      a.velocity.set(0, 0, 0);
+      a.fleeTimer = 0;
+      a.label.text = "Prey";
+      a.label.color = 0x4ade80;
+    }
+    this.labLog("[ACTION] Animals respawned.");
   }
 
   // [FIX #17] Dedicated log function — no global console.log override
@@ -530,6 +827,12 @@ class SurvivalLab extends xb.Script {
   onSelectStart(event) {
     initAudio();
     const ctrl = event.target;
+
+    // Settings panel takes priority when controller is aimed at it (and not mid-draw).
+    if (!this.isDrawing && this.settings && this.settings.tryClick(ctrl)) {
+      return;
+    }
+
     const handedness = ctrl.xrInputSource?.handedness;
 
     // [FIX C1] Use handedness exclusively when available
@@ -917,6 +1220,20 @@ class SurvivalLab extends xb.Script {
       this.bowGroup.rotation.set(0, 0, 0);
       this.leftController = ctrl;
       this.bowAttached = true;
+    }
+
+    // Pointer ray follows whichever controller isn't holding the bow.
+    if (this.pointerRay) {
+      let pointerCtrl = null;
+      for (const c of xb.core.input.controllers) {
+        if (c !== this.leftController) { pointerCtrl = c; break; }
+      }
+      if (pointerCtrl && !this.isDrawing) {
+        if (this.pointerRay.parent !== pointerCtrl) pointerCtrl.add(this.pointerRay);
+        this.pointerRay.visible = true;
+      } else {
+        this.pointerRay.visible = false;
+      }
     }
 
     // [FIX #15] Animal state machine with flee timer + return
