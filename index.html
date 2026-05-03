@@ -496,14 +496,18 @@ class SurvivalLab extends xb.Script {
     // REAL WORLD PHYSICS TUNING
     this.MAX_DRAW = 0.75;
     this.SLIP_DISTANCE = 0.85;
-    this.MAX_VEL = 60.0;
+    this.MAX_VEL = 65.0;            // Linear-equivalent peak; ~70 J at full draw with stack
     this.GRAVITY = 9.81;
     this.ARROW_MASS = 0.04;
     this.BOW_EFFICIENCY = 0.75; // [FIX #13] Real recurve ~70-80% efficient
 
+    // Phase-1 bow physics: stacking force curve
+    this.STACK_THRESHOLD = 0.85;    // Fraction of MAX_DRAW where stack begins
+    this.STACK_STIFFNESS = 50.0;    // How sharply force rises past threshold
+
     // [FIX #9] Aerodynamic drag constants
     this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
-    this.ARROW_CD = 1.5;            // Drag coefficient (laminar regime)
+    this.ARROW_CD = 0.55;           // Spin-stabilized fletched arrow
     this.ARROW_CROSS_AREA = 0.00005; // ~8mm diameter shaft cross-section m²
 
     this.bowAttached = false;
@@ -512,6 +516,7 @@ class SurvivalLab extends xb.Script {
     this.isDrawing = false;
     this.drawDistance = 0;
     this.fatigueTimer = 0.0;
+    this.holdSeconds = 0.0; // Time at >25% draw (for hold tremor)
 
     // [FIX #2, #5] Pre-allocated temp objects — zero per-frame allocation
     this._raycaster = new THREE.Raycaster();
@@ -519,12 +524,24 @@ class SurvivalLab extends xb.Script {
     this._tmpVec3B = new THREE.Vector3();
     this._tmpVec3C = new THREE.Vector3();
     this._tmpQuat = new THREE.Quaternion();
+    this._tmpEuler = new THREE.Euler();
 
     // [FIX #4] Troika text batching
     this._consoleDirty = false;
 
     // [FIX #11] Fatigue audio cooldown
     this._lastCreakTime = 0;
+
+    // Hold-tremor state (procedural multi-frequency wobble)
+    this._tremorTime = 0;
+    this._tremorPhaseX = Math.random() * Math.PI * 2;
+    this._tremorPhaseY = Math.random() * Math.PI * 2;
+    this._tremorYaw = 0;     // current yaw offset (radians)
+    this._tremorPitch = 0;   // current pitch offset (radians)
+
+    // Anchor consistency: rolling history of right-hand draw position (bow-local)
+    this._anchorHistory = [];
+    this._anchorMax = 5;
   }
 
   init() {
@@ -574,6 +591,71 @@ class SurvivalLab extends xb.Script {
       a.label.color = 0x4ade80;
     }
     this.labLog("[ACTION] Animals respawned.");
+  }
+
+  // ── Phase 1 bow physics helpers ─────────────────────────────────────────────
+
+  // Force curve as a function of draw ratio r ∈ [0, 1].
+  // Linear up to STACK_THRESHOLD, then a quadratic stack term piles on.
+  // Returns force in arbitrary units where linear full-draw force = 1.
+  _drawForce(r) {
+    let f = r;
+    if (r > this.STACK_THRESHOLD) {
+      const x = r - this.STACK_THRESHOLD;
+      f += this.STACK_STIFFNESS * x * x;
+    }
+    return f;
+  }
+
+  // Stored elastic energy ratio: ∫₀ʳ F(s) ds, normalized so linear at r=1 → 1.
+  // Stacking pushes energy past 1 in the last fraction of the draw.
+  _drawEnergyRatio(r) {
+    let e = 0.5 * r * r;
+    if (r > this.STACK_THRESHOLD) {
+      const x = r - this.STACK_THRESHOLD;
+      e += this.STACK_STIFFNESS * x * x * x / 3;
+    }
+    return e * 2;
+  }
+
+  // Output arrow speed for given draw ratio, applying efficiency.
+  _drawSpeed(r) {
+    return Math.sqrt(this._drawEnergyRatio(r)) * this.MAX_VEL * Math.sqrt(this.BOW_EFFICIENCY);
+  }
+
+  // Update procedural hold tremor. Magnitude grows with draw and hold time.
+  _updateTremor(dt, drawRatio) {
+    this._tremorTime += dt;
+    const baseMag = 0.003;
+    const drawMag = drawRatio * 0.008;
+    const holdMag = Math.min(0.015, this.holdSeconds * 0.003);
+    const mag = baseMag + drawMag + holdMag;
+    const t = this._tremorTime;
+    this._tremorYaw = (
+      Math.sin(t * 5.7 + this._tremorPhaseX) * 0.6 +
+      Math.sin(t * 13.3 + this._tremorPhaseX * 2) * 0.4
+    ) * mag;
+    this._tremorPitch = (
+      Math.sin(t * 4.9 + this._tremorPhaseY) * 0.6 +
+      Math.sin(t * 11.7 + this._tremorPhaseY * 1.5) * 0.4
+    ) * mag * 0.7;
+  }
+
+  // Anchor consistency scatter: deviation of current draw position from
+  // the rolling mean of recent shots. Returns radian magnitude.
+  _anchorScatter(currentLocal) {
+    if (this._anchorHistory.length < 2) return 0;
+    const mean = this._tmpVec3A.set(0, 0, 0);
+    for (const a of this._anchorHistory) mean.add(a);
+    mean.divideScalar(this._anchorHistory.length);
+    const dev = currentLocal.distanceTo(mean);
+    // 1 cm deviation → 0.01 rad scatter (~0.6°), capped at ~3°.
+    return Math.min(0.05, dev * 1.0);
+  }
+
+  _recordAnchor(localPos) {
+    this._anchorHistory.push(localPos.clone());
+    if (this._anchorHistory.length > this._anchorMax) this._anchorHistory.shift();
   }
 
   // [FIX #17] Dedicated log function — no global console.log override
@@ -914,15 +996,34 @@ class SurvivalLab extends xb.Script {
       this.stringLine.geometry.attributes.position.needsUpdate = true;
       this.loadedArrow.position.set(0, 0, this.drawDistance - 0.8);
 
+      const dt = xb.getDeltaTime();
       const drawRatio = this.drawDistance / this.MAX_DRAW;
-      // [FIX #13] Apply bow efficiency to velocity calculation
-      const speed = this.MAX_VEL * drawRatio * Math.sqrt(this.BOW_EFFICIENCY);
-      const estKE = 0.5 * this.ARROW_MASS * (speed * speed);
+
+      // Stacking-curve velocity / KE
+      const speed = this._drawSpeed(drawRatio);
+      const estKE = 0.5 * this.ARROW_MASS * speed * speed;
+
+      // Hold-time tracking (for tremor magnitude)
+      if (drawRatio > 0.33) {
+        this.holdSeconds += dt;
+      } else {
+        this.holdSeconds = Math.max(0, this.holdSeconds - dt * 2);
+      }
+
+      // Procedural hold tremor: visible wobble on the loaded arrow
+      this._updateTremor(dt, drawRatio);
+      this.loadedArrow.rotation.set(this._tremorPitch, this._tremorYaw, 0);
+
+      // Extra haptic kick when entering the stack region
+      if (drawRatio > this.STACK_THRESHOLD) {
+        const stackBoost = (drawRatio - this.STACK_THRESHOLD) / (1 - this.STACK_THRESHOLD);
+        pulseHaptic(this.rightController, 0.15 + stackBoost * 0.5, 20);
+      }
 
       if (drawRatio > 0.8) {
-        this.fatigueTimer += xb.getDeltaTime();
+        this.fatigueTimer += dt;
       } else {
-        this.fatigueTimer = Math.max(0, this.fatigueTimer - xb.getDeltaTime() * 2);
+        this.fatigueTimer = Math.max(0, this.fatigueTimer - dt * 2);
       }
 
       let fatiguePercent = Math.min(100, (this.fatigueTimer / 3.0) * 100);
@@ -966,15 +1067,25 @@ class SurvivalLab extends xb.Script {
         // [FIX #5] Reuse pre-allocated vectors
         const tipLocal = this._tmpVec3A.set(0, 0, this.drawDistance - 0.8);
         const spawnWorld = this.bowGroup.localToWorld(tipLocal.clone());
-        const forward = this._tmpVec3B.set(0, 0, -1).applyQuaternion(
-          this.bowGroup.getWorldQuaternion(this._tmpQuat)
-        );
+
+        // Anchor consistency: capture right hand in bow-local space.
+        const rightHandWorld = this._tmpVec3C.setFromMatrixPosition(this.rightController.matrixWorld);
+        const anchorLocal = this.bowGroup.worldToLocal(rightHandWorld.clone());
+        const anchorScatter = this._anchorScatter(anchorLocal);
+        this._recordAnchor(anchorLocal);
 
         const drawRatio = this.drawDistance / this.MAX_DRAW;
-        // [FIX #13] Efficiency applied here too
-        const velocityMag = this.MAX_VEL * drawRatio * Math.sqrt(this.BOW_EFFICIENCY);
-        const estKE = 0.5 * this.ARROW_MASS * (velocityMag * velocityMag);
-        const velocityVec = forward.clone().multiplyScalar(velocityMag);
+        const velocityMag = this._drawSpeed(drawRatio);
+        const estKE = 0.5 * this.ARROW_MASS * velocityMag * velocityMag;
+
+        // Build firing direction in bow-local space, apply tremor + anchor scatter,
+        // then transform to world.
+        const yawErr = this._tremorYaw + (Math.random() - 0.5) * 2 * anchorScatter;
+        const pitchErr = this._tremorPitch + (Math.random() - 0.5) * anchorScatter;
+        const dir = this._tmpVec3B.set(0, 0, -1);
+        dir.applyEuler(this._tmpEuler.set(pitchErr, yawErr, 0, 'XYZ'));
+        dir.applyQuaternion(this.bowGroup.getWorldQuaternion(this._tmpQuat));
+        const velocityVec = dir.clone().multiplyScalar(velocityMag);
 
         let wobbleApplied = false;
         if (this.fatigueTimer >= 3.0) {
@@ -985,7 +1096,9 @@ class SurvivalLab extends xb.Script {
             wobbleApplied = true;
         }
 
-        this.labLog(`[FIRE] V: ${velocityMag.toFixed(1)}m/s | KE: ${estKE.toFixed(1)}J | Eff: ${(this.BOW_EFFICIENCY*100).toFixed(0)}% | Wobble: ${wobbleApplied}`);
+        const tremorDeg = (Math.hypot(this._tremorYaw, this._tremorPitch) * 180 / Math.PI).toFixed(1);
+        const scatterDeg = (anchorScatter * 180 / Math.PI).toFixed(1);
+        this.labLog(`[FIRE] V: ${velocityMag.toFixed(1)}m/s | KE: ${estKE.toFixed(1)}J | Tremor: ${tremorDeg}° | Anchor: ${scatterDeg}° | Wobble: ${wobbleApplied}`);
 
         this.fireArrow(spawnWorld, velocityVec, this.bowGroup.getWorldQuaternion(this._tmpQuat.clone()));
       } else {
@@ -996,6 +1109,7 @@ class SurvivalLab extends xb.Script {
   resetDrawState() {
       this.isDrawing = false;
       this.loadedArrow.visible = false;
+      this.loadedArrow.rotation.set(0, 0, 0);
       const positions = this.stringLine.geometry.attributes.position.array;
       positions[3] = 0;
       positions[4] = 0;
@@ -1005,6 +1119,9 @@ class SurvivalLab extends xb.Script {
       this.bowHud.color = 0x38bdf8;
       this.drawDistance = 0;
       this.fatigueTimer = 0;
+      this.holdSeconds = 0;
+      this._tremorYaw = 0;
+      this._tremorPitch = 0;
   }
 
   fireArrow(startPos, velocityVector, orientation) {
