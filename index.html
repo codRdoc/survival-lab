@@ -431,8 +431,9 @@ class SettingsPanel {
     addToggle("Debug Console",   () => lab.consoleGroup.visible, v => { lab.consoleGroup.visible = v; });
 
     addHeader("- QUIVER -");
-    addSlider("Arrows",          () => lab.arrowsAvailable, v => { lab.arrowsAvailable = v; lab._updateQuiverCount(); }, 0, 99, 1, v => v.toFixed(0));
-    addToggle("Auto-Nock",       () => lab.AUTO_NOCK,       v => { lab.AUTO_NOCK = v; });
+    addSlider("Arrows",           () => lab.arrowsAvailable, v => { lab.arrowsAvailable = v; lab._updateQuiverCount(); }, 0, 99, 1, v => v.toFixed(0));
+    addToggle("Auto-Nock",        () => lab.AUTO_NOCK,             v => { lab.AUTO_NOCK = v; });
+    addToggle("Follow Head",      () => lab.QUIVER_FOLLOWS_HEAD,   v => { lab.QUIVER_FOLLOWS_HEAD = v; });
     addAction("Refill Quiver (20)", 0xfbbf24, () => lab.refillQuiver(20));
 
     addHeader("- WORLD -");
@@ -562,6 +563,7 @@ class SurvivalLab extends xb.Script {
     this.QUIVER_GRAB_RADIUS = 0.28;
     this.NOCK_SNAP_RADIUS = 0.22;
     this.AUTO_NOCK = false;            // when true, skips quiver — nock spawns an arrow directly
+    this.QUIVER_FOLLOWS_HEAD = false;  // when true, quiver anchors to headset yaw
     this.heldArrowState = 'none';      // 'none' | 'holding' | 'drawing'
     this.heldArrow = null;
   }
@@ -598,9 +600,9 @@ class SurvivalLab extends xb.Script {
   // ── Quiver ──────────────────────────────────────────────────────────────────
   setupQuiver() {
     this.quiverGroup = new THREE.Group();
-    // Initial world position: slightly forward and to the right of spawn,
-    // hip height. update() re-anchors it to the headset each frame.
-    this.quiverGroup.position.set(0.35, 1.0, -0.25);
+    // Fixed world position: right of player spawn, hip-height, forward enough
+    // to be reachable. Player is largely stationary by design.
+    this.quiverGroup.position.set(0.45, 1.0, -0.45);
     this.add(this.quiverGroup);
 
     // Body: closed cylinder so it has a clear silhouette from any angle.
@@ -641,6 +643,9 @@ class SurvivalLab extends xb.Script {
     this.quiverGroup.add(this.quiverCountText);
 
     this._updateQuiverCount();
+
+    const p = this.quiverGroup.position;
+    this.labLog(`[QUIVER] Placed at world (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`);
   }
 
   _updateQuiverCount() {
@@ -1576,19 +1581,19 @@ class SurvivalLab extends xb.Script {
     }
   }
 
-  // Anchor the quiver to the player's torso (yaw-only follow off the headset).
+  // Anchor the quiver to the player's torso. Disabled by default — the
+  // headset pose can be at origin in early frames, which would drop the
+  // quiver below the floor. Toggle this on once we can read a settled pose.
   _updateQuiverPosition() {
-    if (!this.quiverGroup) return;
+    if (!this.quiverGroup || !this.QUIVER_FOLLOWS_HEAD) return;
     const cam = xb.core?.camera
       || (xb.core?.renderer?.xr?.isPresenting ? xb.core.renderer.xr.getCamera() : null);
     if (!cam) return;
     const camPos = this._tmpVec3A.setFromMatrixPosition(cam.matrixWorld);
+    if (camPos.y < 0.5) return;  // pose not yet settled
     const camQuat = cam.getWorldQuaternion(this._tmpQuat);
     const yaw = new THREE.Euler().setFromQuaternion(camQuat, 'YXZ').y;
     const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0));
-    // Right hip, below head, slightly forward. -Z is the camera's forward,
-    // so a small negative z keeps the quiver in front of the body where the
-    // hand can reach it.
     const offset = this._tmpVec3B.set(0.32, -0.55, -0.10).applyQuaternion(yawQuat);
     this.quiverGroup.position.copy(camPos).add(offset);
     this.quiverGroup.quaternion.copy(yawQuat);
