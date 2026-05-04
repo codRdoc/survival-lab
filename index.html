@@ -113,6 +113,7 @@ import 'xrblocks/addons/simulator/SimulatorAddons.js';
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
 import { Text } from 'troika-three-text';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 
 // ==========================================
 // PROCEDURAL AUDIO SYNTHESIZER
@@ -542,6 +543,10 @@ class SurvivalLab extends xb.Script {
     // Anchor consistency: rolling history of right-hand draw position (bow-local)
     this._anchorHistory = [];
     this._anchorMax = 5;
+
+    // Controller model rendering (auto-loaded from WebXR profile)
+    this._controllerModelFactory = new XRControllerModelFactory();
+    this._gripsAdded = [false, false];
   }
 
   init() {
@@ -1358,8 +1363,23 @@ class SurvivalLab extends xb.Script {
     }
   }
 
+  _ensureControllerModels() {
+    const renderer = xb.core?.renderer;
+    if (!renderer || !renderer.xr) return;
+    for (let i = 0; i < 2; i++) {
+      if (this._gripsAdded[i]) continue;
+      const grip = renderer.xr.getControllerGrip(i);
+      if (!grip) continue;
+      const model = this._controllerModelFactory.createControllerModel(grip);
+      grip.add(model);
+      this.add(grip);
+      this._gripsAdded[i] = true;
+    }
+  }
+
   update() {
     const dt = xb.getDeltaTime();
+    this._ensureControllerModels();
 
     // Detect AR/VR mode change at runtime
     const renderer = xb.core?.renderer;
