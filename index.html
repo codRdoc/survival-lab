@@ -430,6 +430,11 @@ class SettingsPanel {
     addToggle("Haptics",         () => hapticsEnabled,     v => { hapticsEnabled = v; });
     addToggle("Debug Console",   () => lab.consoleGroup.visible, v => { lab.consoleGroup.visible = v; });
 
+    addHeader("- QUIVER -");
+    addSlider("Arrows",          () => lab.arrowsAvailable, v => { lab.arrowsAvailable = v; lab._updateQuiverCount(); }, 0, 99, 1, v => v.toFixed(0));
+    addToggle("Auto-Nock",       () => lab.AUTO_NOCK,       v => { lab.AUTO_NOCK = v; });
+    addAction("Refill Quiver (20)", 0xfbbf24, () => lab.refillQuiver(20));
+
     addHeader("- WORLD -");
     addAction("Reset Arrows",    0xef4444, () => lab.resetArrows());
     addAction("Respawn Animals", 0x10b981, () => lab.respawnAnimals());
@@ -551,6 +556,14 @@ class SurvivalLab extends xb.Script {
     // Controller model rendering (auto-loaded from WebXR profile)
     this._controllerModelFactory = new XRControllerModelFactory();
     this._gripsAdded = [false, false];
+
+    // Quiver / arrow inventory
+    this.arrowsAvailable = 20;
+    this.QUIVER_GRAB_RADIUS = 0.28;
+    this.NOCK_SNAP_RADIUS = 0.22;
+    this.AUTO_NOCK = false;            // when true, skips quiver — nock spawns an arrow directly
+    this.heldArrowState = 'none';      // 'none' | 'holding' | 'drawing'
+    this.heldArrow = null;
   }
 
   init() {
@@ -558,6 +571,7 @@ class SurvivalLab extends xb.Script {
     this.setupVRConsole();
     this.createSharedArrowAssets(); // [FIX #1]
     this.createBow();
+    this.setupQuiver();
     this.buildTestingZones();
     this.setupSettingsPanel();
     this.setupPointerRay();
@@ -579,6 +593,131 @@ class SurvivalLab extends xb.Script {
     );
     this.pointerRay.visible = false;
     this.add(this.pointerRay);
+  }
+
+  // ── Quiver ──────────────────────────────────────────────────────────────────
+  setupQuiver() {
+    this.quiverGroup = new THREE.Group();
+    // Initial world position: right of player spawn at hip height. update() will
+    // re-anchor it relative to the headset each frame.
+    this.quiverGroup.position.set(0.35, 0.95, 0.18);
+    this.add(this.quiverGroup);
+
+    // Body: open cylinder
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.045, 0.4, 12, 1, true),
+      new THREE.MeshLambertMaterial({ color: 0x5a3a1f, side: THREE.DoubleSide })
+    );
+    this.quiverGroup.add(body);
+
+    // Visible arrow shafts inside the quiver, sticking up
+    this._quiverVisualArrows = [];
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2;
+      const r = 0.035;
+      const arrow = new THREE.Mesh(this._arrowShaftGeo, this._arrowShaftMat);
+      arrow.position.set(Math.cos(angle) * r, 0.3, Math.sin(angle) * r);
+      // Cylinder defaults to Y axis; our shaft geo was already +Y aligned — keep it vertical.
+      this.quiverGroup.add(arrow);
+      this._quiverVisualArrows.push(arrow);
+    }
+
+    // Arrow count label
+    this.quiverCountText = new Text();
+    this.quiverCountText.fontSize = 0.07;
+    this.quiverCountText.color = 0xfbbf24;
+    this.quiverCountText.anchorX = 'center';
+    this.quiverCountText.anchorY = 'middle';
+    this.quiverCountText.position.set(0, 0.65, 0);
+    this.quiverGroup.add(this.quiverCountText);
+
+    this._updateQuiverCount();
+  }
+
+  _updateQuiverCount() {
+    if (this.quiverCountText) {
+      this.quiverCountText.text = `${this.arrowsAvailable}`;
+      this.quiverCountText.sync();
+    }
+    if (this._quiverVisualArrows) {
+      const visible = Math.min(
+        this._quiverVisualArrows.length,
+        Math.ceil(this.arrowsAvailable / 4)
+      );
+      for (let i = 0; i < this._quiverVisualArrows.length; i++) {
+        this._quiverVisualArrows[i].visible = i < visible;
+      }
+    }
+  }
+
+  refillQuiver(count = 20) {
+    this.arrowsAvailable = count;
+    this._updateQuiverCount();
+    this.labLog(`[QUIVER] Refilled to ${count} arrows.`);
+  }
+
+  // Build a visual arrow group (shaft + tip), parented to the given controller,
+  // extending forward (toward -z) of the hand with the nock at the controller origin.
+  _grabArrow(ctrl) {
+    if (this.arrowsAvailable <= 0) {
+      this.labLog("[QUIVER] Empty.");
+      pulseHaptic(ctrl, 0.1, 80);
+      return false;
+    }
+
+    const held = new THREE.Group();
+    const shaft = new THREE.Mesh(this._arrowShaftGeo, this._arrowShaftMat);
+    shaft.position.z = 0.4;
+    shaft.rotation.x = Math.PI / 2;
+    held.add(shaft);
+    const tip = new THREE.Mesh(this._arrowTipGeo, this._arrowTipMat);
+    tip.position.z = -0.02;
+    tip.rotation.x = -Math.PI / 2;
+    held.add(tip);
+    // Place so tip extends forward of the hand and nock end sits at the controller.
+    held.position.set(0, 0, -0.8);
+
+    ctrl.add(held);
+    this.heldArrow = held;
+    this.heldArrowState = 'holding';
+    this.arrowsAvailable--;
+    this._updateQuiverCount();
+
+    playSound(nockBuffer, 0.6);
+    pulseHaptic(ctrl, 0.4, 40);
+    this.labLog(`[QUIVER] Arrow drawn (${this.arrowsAvailable} left).`);
+    return true;
+  }
+
+  _consumeQuiverArrow() {
+    if (this.arrowsAvailable <= 0) return false;
+    this.arrowsAvailable--;
+    this._updateQuiverCount();
+    return true;
+  }
+
+  _startNock(ctrl) {
+    if (this.heldArrow) {
+      this.heldArrow.parent?.remove(this.heldArrow);
+      this.heldArrow = null;
+    }
+    this.rightController = ctrl;
+    this.isDrawing = true;
+    this.loadedArrow.visible = true;
+    this.heldArrowState = 'drawing';
+
+    playSound(nockBuffer, 0.6);
+    pulseHaptic(ctrl, 0.3, 30);
+
+    ctrl.addEventListener('disconnected', () => this._onControllerDisconnect('right'));
+  }
+
+  _dropArrow() {
+    if (!this.heldArrow) return;
+    this.heldArrow.parent?.remove(this.heldArrow);
+    this.heldArrow = null;
+    this.heldArrowState = 'none';
+    this.labLog("[QUIVER] Arrow dropped.");
   }
 
   resetArrows() {
@@ -943,24 +1082,41 @@ class SurvivalLab extends xb.Script {
       return;
     }
     if (isRight && this.bowAttached) {
-      // [FIX #4 string grab zone] Use radial distance check, not just z
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(ctrl.matrixWorld);
+
+      // 1. If idle, try to grab an arrow from the quiver.
+      if (this.heldArrowState === 'none' && this.quiverGroup) {
+        const quiverWorld = this._tmpVec3B.setFromMatrixPosition(this.quiverGroup.matrixWorld);
+        if (rightHandWorld.distanceTo(quiverWorld) < this.QUIVER_GRAB_RADIUS) {
+          this._grabArrow(ctrl);
+          return;
+        }
+      }
+
+      // 2. If holding an arrow (or AUTO_NOCK is on), check string proximity to nock.
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
+      const stringDist = localRightHand.length();
+      const nearString = stringDist < 0.3 && localRightHand.z < 0.25;
 
-      const grabRadius = Math.sqrt(localRightHand.x * localRightHand.x + localRightHand.y * localRightHand.y + localRightHand.z * localRightHand.z);
-      if (grabRadius < 0.3 && localRightHand.z < 0.25) {
-          this.rightController = ctrl;
-          this.isDrawing = true;
-          this.loadedArrow.visible = true;
-
-          // [FIX #12] Nock feedback
-          playSound(nockBuffer, 0.6);
-          pulseHaptic(ctrl, 0.2, 30);
-
-          // [FIX #6] Listen for disconnect
-          ctrl.addEventListener('disconnected', () => this._onControllerDisconnect('right'));
+      if (nearString) {
+        if (this.heldArrowState === 'holding') {
+          this._startNock(ctrl);
+          return;
+        }
+        if (this.heldArrowState === 'none' && this.AUTO_NOCK) {
+          if (!this._consumeQuiverArrow()) {
+            this.labLog("[QUIVER] Empty.");
+            return;
+          }
+          this._startNock(ctrl);
+          return;
+        }
+        if (this.heldArrowState === 'none') {
+          this.labLog("[INPUT] No arrow nocked. Reach to the quiver first.");
+          return;
+        }
       } else {
-          this.labLog("[INPUT] Ignored: Hand too far to grab string.");
+        this.labLog("[INPUT] Ignored: Hand too far from quiver and string.");
       }
     }
   }
@@ -983,7 +1139,20 @@ class SurvivalLab extends xb.Script {
   }
 
   onSelecting(event) {
-    if (this.isDrawing && event.target === this.rightController && this.bowAttached) {
+    const ctrl = event.target;
+
+    // Holding → nock: when the right hand brings the held arrow within reach
+    // of the bow string (trigger already held since the grab), snap it onto
+    // the string and start drawing.
+    if (this.heldArrowState === 'holding' && this.bowAttached) {
+      const ctrlWorld = this._tmpVec3A.setFromMatrixPosition(ctrl.matrixWorld);
+      const localCtrl = this.bowGroup.worldToLocal(ctrlWorld.clone());
+      if (localCtrl.length() < this.NOCK_SNAP_RADIUS && localCtrl.z < 0.2) {
+        this._startNock(ctrl);
+      }
+    }
+
+    if (this.isDrawing && ctrl === this.rightController && this.bowAttached) {
       // [FIX #5] Reuse pre-allocated vectors
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(this.rightController.matrixWorld);
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
@@ -1100,9 +1269,15 @@ class SurvivalLab extends xb.Script {
   }
 
   onSelectEnd(event) {
-    if (this.isDrawing && event.target === this.rightController) {
+    const ctrl = event.target;
+    if (this.isDrawing && ctrl === this.rightController) {
       this.executeFire();
       this.resetDrawState();
+      this.heldArrowState = 'none';
+      return;
+    }
+    if (this.heldArrowState === 'holding') {
+      this._dropArrow();
     }
   }
 
@@ -1187,6 +1362,7 @@ class SurvivalLab extends xb.Script {
       this.holdSeconds = 0;
       this._tremorYaw = 0;
       this._tremorPitch = 0;
+      this.heldArrowState = 'none';
   }
 
   fireArrow(startPos, velocityVector, orientation) {
@@ -1391,9 +1567,25 @@ class SurvivalLab extends xb.Script {
     }
   }
 
+  // Anchor the quiver to the player's torso (yaw-only follow off the headset).
+  _updateQuiverPosition() {
+    if (!this.quiverGroup) return;
+    const cam = xb.core?.camera
+      || (xb.core?.renderer?.xr?.isPresenting ? xb.core.renderer.xr.getCamera() : null);
+    if (!cam) return;
+    const camPos = this._tmpVec3A.setFromMatrixPosition(cam.matrixWorld);
+    const camQuat = cam.getWorldQuaternion(this._tmpQuat);
+    const yaw = new THREE.Euler().setFromQuaternion(camQuat, 'YXZ').y;
+    const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0));
+    const offset = this._tmpVec3B.set(0.32, -0.55, 0.18).applyQuaternion(yawQuat);
+    this.quiverGroup.position.copy(camPos).add(offset);
+    this.quiverGroup.quaternion.copy(yawQuat);
+  }
+
   update() {
     const dt = xb.getDeltaTime();
     this._ensureControllerModels();
+    this._updateQuiverPosition();
 
     // Detect AR/VR mode change at runtime
     const renderer = xb.core?.renderer;
