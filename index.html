@@ -506,6 +506,10 @@ class SurvivalLab extends xb.Script {
     this.STACK_THRESHOLD = 0.85;    // Fraction of MAX_DRAW where stack begins
     this.STACK_STIFFNESS = 50.0;    // How sharply force rises past threshold
 
+    // Arrow rest is offset slightly off the bow's central axis so the arrow
+    // shaft passes alongside the riser instead of through it.
+    this.REST_OFFSET_X = 0.025;     // Right-hand archer: arrow on +x side of riser
+
     // [FIX #9] Aerodynamic drag constants
     this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
     this.ARROW_CD = 0.55;           // Spin-stabilized fletched arrow
@@ -984,49 +988,56 @@ class SurvivalLab extends xb.Script {
       const rightHandWorld = this._tmpVec3A.setFromMatrixPosition(this.rightController.matrixWorld);
       const localRightHand = this.bowGroup.worldToLocal(rightHandWorld.clone());
 
-      // Radial draw: distance from brace centre, not just z component.
+      // Slip only triggers when the hand is past the brace plane on the
+      // archer side AND has been pulled past the slip radius.
       const handRadial = localRightHand.length();
-
-      // AUTO-RELEASE CHECK — based on radial pull magnitude
-      if (handRadial > this.SLIP_DISTANCE) {
+      if (localRightHand.z > 0 && handRadial > this.SLIP_DISTANCE) {
           this.labLog(`[OVERDRAW] String slipped! Pulled past ${this.SLIP_DISTANCE}m.`);
           this.executeFire();
           this.resetDrawState();
           return;
       }
 
-      // Only count as drawing if hand is on the archer side of the brace plane.
-      if (localRightHand.z <= 0) {
-        this.drawDistance = 0;
+      // Apex (string-pull point) is the right-hand position only when the
+      // hand is on the archer side of the brace plane. In front of the bow
+      // the string can't be deflected, so the apex stays at brace center.
+      let apex;
+      if (localRightHand.z > 0) {
+        apex = localRightHand.clone();
+        const len = apex.length();
+        if (len > this.MAX_DRAW && len > 0.0001) {
+          apex.multiplyScalar(this.MAX_DRAW / len);
+        }
       } else {
-        this.drawDistance = Math.min(handRadial, this.MAX_DRAW);
+        apex = new THREE.Vector3(0, 0, 0);
       }
+      this.drawDistance = apex.length();
 
-      // String visual: apex follows the right hand (clamped to MAX_DRAW radius).
-      const apex = localRightHand.clone();
-      const apexLen = apex.length();
-      if (apexLen > this.MAX_DRAW && apexLen > 0.0001) {
-        apex.multiplyScalar(this.MAX_DRAW / apexLen);
-      }
       const positions = this.stringLine.geometry.attributes.position.array;
       positions[3] = apex.x;
       positions[4] = apex.y;
       positions[5] = apex.z;
       this.stringLine.geometry.attributes.position.needsUpdate = true;
 
-      // Loaded arrow visual follows the actual nock→rest line so off-axis
-      // pulls show the arrow misaligned. Tremor adds a small extra rotation.
-      const apexLenC = apex.length();
-      if (apexLenC < 0.001) {
-        this.loadedArrow.position.set(0, 0, -0.8);
-        this.loadedArrow.quaternion.identity();
+      // Loaded arrow runs from the rest (offset off the riser axis) to the
+      // nock (apex). Direction = rest → apex extended; the arrow shaft
+      // passes alongside the riser, not through it.
+      const restLocal = this._tmpVec3B.set(this.REST_OFFSET_X, 0, 0);
+      if (this.drawDistance > 0.05) {
+        const fireDirLocal = restLocal.clone().sub(apex);
+        const fl = fireDirLocal.length();
+        if (fl > 0.0001) {
+          fireDirLocal.divideScalar(fl); // forward direction (apex → rest extended)
+          const tipPos = apex.clone().addScaledVector(fireDirLocal, 0.8);
+          this.loadedArrow.position.copy(tipPos);
+          // Loaded arrow's local +Z = direction from tip to nock = -fireDir
+          this.loadedArrow.quaternion.setFromUnitVectors(
+            new THREE.Vector3(0, 0, 1), fireDirLocal.clone().negate()
+          );
+        }
       } else {
-        const arrowDir = apex.clone().multiplyScalar(1 / apexLenC); // tip→nock
-        const tipPos = apex.clone().sub(arrowDir.clone().multiplyScalar(0.8));
-        this.loadedArrow.position.copy(tipPos);
-        this.loadedArrow.quaternion.setFromUnitVectors(
-          new THREE.Vector3(0, 0, 1), arrowDir
-        );
+        this.loadedArrow.position.set(this.REST_OFFSET_X, 0, -0.8);
+        this.loadedArrow.quaternion.identity();
       }
 
       const dt = xb.getDeltaTime();
@@ -1100,24 +1111,27 @@ class SurvivalLab extends xb.Script {
         pulseHaptic(this.rightController, 1.0, 50);
         pulseHaptic(this.leftController, 0.8, 30);
 
-        // Capture nock position (right hand) in bow-local space.
+        // Capture nock (right hand) in bow-local; clamp to draw side.
         const rightHandWorld = this._tmpVec3C.setFromMatrixPosition(this.rightController.matrixWorld);
         const apex = this.bowGroup.worldToLocal(rightHandWorld.clone());
+        if (apex.z < 0) apex.z = 0;
         const apexLen = apex.length();
         if (apexLen > this.MAX_DRAW && apexLen > 0.0001) {
           apex.multiplyScalar(this.MAX_DRAW / apexLen);
         }
-        const apexLenC = apex.length();
 
         // Anchor consistency
         const anchorScatter = this._anchorScatter(apex);
         this._recordAnchor(apex);
 
-        // Arrow flies along nock→rest line, extended forward.
-        // Local firing direction = -apex.normalize().  Spawn at the tip end
-        // of the loaded arrow = apex + 0.8 * (firing dir).
-        const localDir = apexLenC > 0.0001
-          ? apex.clone().multiplyScalar(-1 / apexLenC)
+        // Firing direction = rest → apex extended (forward through the rest).
+        // Using the offset rest matches the loaded-arrow visual and prevents
+        // the arrow from clipping the riser.
+        const restLocal = new THREE.Vector3(this.REST_OFFSET_X, 0, 0);
+        const fireDirLocal = restLocal.clone().sub(apex);
+        const fl = fireDirLocal.length();
+        const localDir = fl > 0.0001
+          ? fireDirLocal.divideScalar(fl)
           : new THREE.Vector3(0, 0, -1);
         const tipLocal = apex.clone().addScaledVector(localDir, 0.8);
         const spawnWorld = this.bowGroup.localToWorld(tipLocal.clone());
