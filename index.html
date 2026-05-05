@@ -239,10 +239,10 @@ class SettingsPanel {
   constructor(parent, lab) {
     this.lab = lab;
     this.group = new THREE.Group();
-    // Closer to player and angled to face them — reduces the reach distance
-    // and makes the pointer ray feel responsive.
-    this.group.position.set(2.2, 1.5, -2.2);
-    this.group.rotation.y = -Math.PI / 4;
+    // High and to the right, out of the firing arc to the targets.
+    // Player turns head/right hand to access.
+    this.group.position.set(3.0, 2.2, -1.4);
+    this.group.rotation.y = -Math.PI / 3;
     parent.add(this.group);
 
     this.buttons = [];
@@ -1631,10 +1631,11 @@ class SurvivalLab extends xb.Script {
     }
   }
 
-  // Position the quiver per frame for shoulder mode. Bow- and hip-mounted
-  // modes are static (or parented to bow which already follows the controller).
+  // Anchor the quiver to the headset for hip and shoulder modes. Bow mode
+  // stays parented to the bow so this does nothing in that case.
   _updateQuiverPosition() {
-    if (!this.quiverGroup || this.QUIVER_MODE !== 'shoulder') return;
+    if (!this.quiverGroup) return;
+    if (this.QUIVER_MODE !== 'shoulder' && this.QUIVER_MODE !== 'hip') return;
     const cam = xb.core?.camera
       || (xb.core?.renderer?.xr?.isPresenting ? xb.core.renderer.xr.getCamera() : null);
     if (!cam) return;
@@ -1643,9 +1644,15 @@ class SurvivalLab extends xb.Script {
     const camQuat = cam.getWorldQuaternion(this._tmpQuat);
     const yaw = new THREE.Euler().setFromQuaternion(camQuat, 'YXZ').y;
     const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0));
-    // Over the right shoulder: right of head, slightly above shoulder
-    // (just below head height), and behind so the rim sits at the back.
-    const offset = this._tmpVec3B.set(0.22, -0.10, 0.18).applyQuaternion(yawQuat);
+    let offset;
+    if (this.QUIVER_MODE === 'shoulder') {
+      // Right of head, just below head height, slightly behind.
+      offset = this._tmpVec3B.set(0.22, -0.10, 0.18);
+    } else {
+      // Hip: right side, ~60 cm below head, slightly forward of the body.
+      offset = this._tmpVec3B.set(0.28, -0.60, -0.10);
+    }
+    offset.applyQuaternion(yawQuat);
     this.quiverGroup.position.copy(camPos).add(offset);
     this.quiverGroup.quaternion.copy(yawQuat);
   }
