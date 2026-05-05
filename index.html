@@ -534,6 +534,9 @@ class SurvivalLab extends xb.Script {
     // the arrow rests on the LEFT side of the riser (opposite the draw hand).
     // Bow's local +X is the player's right, so the rest sits at -X.
     this.REST_OFFSET_X = -0.020;
+    // Lateral offset of the loaded-arrow nock visual. Keeps the fletching
+    // (when present) from poking straight at the player's eye at full draw.
+    this.NOCK_VISUAL_OFFSET_X = 0.020;
 
     // [FIX #9] Aerodynamic drag constants
     this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
@@ -1145,7 +1148,11 @@ class SurvivalLab extends xb.Script {
 
     if (isLeft && !this.bowAttached) {
       ctrl.add(this.bowGroup);
-      this.bowGroup.position.set(0, 0, -0.05);
+      // Position bow so its grip (back of riser, bow-local z=-0.175) sits
+      // at the left controller. Brace plane is then ~17.5 cm behind the
+      // controller, matching real archery anatomy and keeping the right
+      // controller a forearm apart from the left at brace.
+      this.bowGroup.position.set(0, 0, 0.175);
       this.bowGroup.rotation.set(0, 0, 0);
       this.leftController = ctrl;
       this.bowAttached = true;
@@ -1267,14 +1274,18 @@ class SurvivalLab extends xb.Script {
 
       // Loaded arrow runs from the rest (offset off the riser axis) to the
       // nock (apex). Direction = rest → apex extended; the arrow shaft
-      // passes alongside the riser, not through it.
+      // passes alongside the riser, not through it. The nock end is also
+      // nudged laterally by NOCK_VISUAL_OFFSET_X so any future fletching
+      // geometry doesn't poke at the player's eye at full draw.
       const restLocal = this._tmpVec3B.set(this.REST_OFFSET_X, 0, 0);
+      const apexVisual = apex.clone();
+      apexVisual.x += this.NOCK_VISUAL_OFFSET_X;
       if (this.drawDistance > 0.05) {
-        const fireDirLocal = restLocal.clone().sub(apex);
+        const fireDirLocal = restLocal.clone().sub(apexVisual);
         const fl = fireDirLocal.length();
         if (fl > 0.0001) {
           fireDirLocal.divideScalar(fl); // forward direction (apex → rest extended)
-          const tipPos = apex.clone().addScaledVector(fireDirLocal, 0.8);
+          const tipPos = apexVisual.clone().addScaledVector(fireDirLocal, 0.8);
           this.loadedArrow.position.copy(tipPos);
           // Loaded arrow's local +Z = direction from tip to nock = -fireDir
           this.loadedArrow.quaternion.setFromUnitVectors(
@@ -1706,7 +1717,11 @@ class SurvivalLab extends xb.Script {
     if (!this.bowAttached && xb.core.input.controllers.length > 0) {
       const ctrl = xb.core.input.controllers[0];
       ctrl.add(this.bowGroup);
-      this.bowGroup.position.set(0, 0, -0.05);
+      // Position bow so its grip (back of riser, bow-local z=-0.175) sits
+      // at the left controller. Brace plane is then ~17.5 cm behind the
+      // controller, matching real archery anatomy and keeping the right
+      // controller a forearm apart from the left at brace.
+      this.bowGroup.position.set(0, 0, 0.175);
       this.bowGroup.rotation.set(0, 0, 0);
       this.leftController = ctrl;
       this.bowAttached = true;
