@@ -239,12 +239,11 @@ class SettingsPanel {
   constructor(parent, lab) {
     this.lab = lab;
     this.group = new THREE.Group();
-    // Back-right of the scene, behind animals at z=-10. Modest scale + bumped
-    // intrinsic fonts so the panel is legible from ~11 m away without rising
-    // too high above the floor.
-    this.group.position.set(5, 4.0, -11);
-    this.group.rotation.y = -0.37;  // face the player
-    this.group.scale.setScalar(1.5);
+    // Far back-right of the scene, well behind animals at z=-10.
+    // Center y raised so the bottom row stays above the floor.
+    this.group.position.set(6, 5.0, -16);
+    this.group.rotation.y = -0.36;  // face the player
+    this.group.scale.setScalar(2.0);
     parent.add(this.group);
 
     this.buttons = [];
@@ -294,7 +293,7 @@ class SettingsPanel {
       format = format || (v => v.toFixed(2));
       const lbl = new Text();
       lbl.text = label;
-      lbl.fontSize = 0.085;
+      lbl.fontSize = 0.10;
       lbl.color = 0xe5e7eb;
       lbl.anchorX = 'left';
       lbl.anchorY = 'middle';
@@ -303,7 +302,7 @@ class SettingsPanel {
 
       const val = new Text();
       val.text = format(getter());
-      val.fontSize = 0.085;
+      val.fontSize = 0.10;
       val.color = 0xfbbf24;
       val.anchorX = 'center';
       val.anchorY = 'middle';
@@ -353,7 +352,7 @@ class SettingsPanel {
     const addToggle = (label, getter, setter) => {
       const lbl = new Text();
       lbl.text = label;
-      lbl.fontSize = 0.085;
+      lbl.fontSize = 0.10;
       lbl.color = 0xe5e7eb;
       lbl.anchorX = 'left';
       lbl.anchorY = 'middle';
@@ -369,7 +368,7 @@ class SettingsPanel {
 
       const txt = new Text();
       txt.text = getter() ? "ON" : "OFF";
-      txt.fontSize = 0.085;
+      txt.fontSize = 0.10;
       txt.color = 0xffffff;
       txt.anchorX = 'center';
       txt.anchorY = 'middle';
@@ -490,7 +489,7 @@ class SettingsPanel {
     const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
     this._raycaster.set(origin, dir);
     this._raycaster.near = 0;
-    this._raycaster.far = 25;
+    this._raycaster.far = 35;
 
     const meshes = this.buttons.map(b => b.mesh);
     const hits = this._raycaster.intersectObjects(meshes, false);
@@ -606,7 +605,7 @@ class SurvivalLab extends xb.Script {
   setupPointerRay() {
     const geo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 0, -25)
+      new THREE.Vector3(0, 0, -35)
     ]);
     this.pointerRay = new THREE.Line(
       geo,
@@ -618,7 +617,7 @@ class SurvivalLab extends xb.Script {
     // Reticle: a disc that snaps to the hit point on the settings panel.
     // Larger because it sits on a panel ~13 m away.
     this.pointerReticle = new THREE.Mesh(
-      new THREE.CircleGeometry(0.06, 16),
+      new THREE.CircleGeometry(0.10, 16),
       new THREE.MeshBasicMaterial({ color: 0xfbbf24, side: THREE.DoubleSide })
     );
     this.pointerReticle.visible = false;
@@ -884,11 +883,11 @@ class SurvivalLab extends xb.Script {
 
   setupVRConsole() {
     this.consoleGroup = new THREE.Group();
-    // Back-left of the scene, behind animals at z=-10. Scaled and font-bumped
-    // for legibility from the player position ~11 m away.
-    this.consoleGroup.position.set(-5, 3.0, -11);
-    this.consoleGroup.rotation.y = 0.37;  // face the player
-    this.consoleGroup.scale.setScalar(2.0);
+    // Far back-left of the scene, well behind animals at z=-10. Scaled up
+    // to compensate for distance.
+    this.consoleGroup.position.set(-6, 3.5, -16);
+    this.consoleGroup.rotation.y = 0.36;  // face the player
+    this.consoleGroup.scale.setScalar(3.0);
     this.add(this.consoleGroup);
 
     const bg = new THREE.Mesh(
@@ -1716,7 +1715,7 @@ class SurvivalLab extends xb.Script {
         const dir = this._tmpVec3B.set(0, 0, -1).applyQuaternion(q);
         this._raycaster.set(origin, dir);
         this._raycaster.near = 0;
-        this._raycaster.far = 25;
+        this._raycaster.far = 35;
         const meshes = this.settings.buttons.map(b => b.mesh);
         const hits = this._raycaster.intersectObjects(meshes, false);
         if (hits.length > 0) {
