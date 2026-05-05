@@ -239,8 +239,10 @@ class SettingsPanel {
   constructor(parent, lab) {
     this.lab = lab;
     this.group = new THREE.Group();
-    this.group.position.set(4, 1.6, -4);
-    this.group.rotation.y = -Math.PI / 6;
+    // Closer to player and angled to face them — reduces the reach distance
+    // and makes the pointer ray feel responsive.
+    this.group.position.set(2.2, 1.5, -2.2);
+    this.group.rotation.y = -Math.PI / 4;
     parent.add(this.group);
 
     this.buttons = [];
@@ -254,7 +256,7 @@ class SettingsPanel {
   }
 
   _build() {
-    const W = 3.6, H = 4.8;
+    const W = 3.2, H = 5.6;
     const bg = new THREE.Mesh(
       new THREE.PlaneGeometry(W, H),
       new THREE.MeshBasicMaterial({ color: 0x000000, opacity: 0.85, transparent: true })
@@ -264,71 +266,71 @@ class SettingsPanel {
 
     const title = new Text();
     title.text = "SETTINGS";
-    title.fontSize = 0.14;
+    title.fontSize = 0.12;
     title.color = 0x4ade80;
     title.anchorX = 'center';
     title.anchorY = 'middle';
-    title.position.set(0, H / 2 - 0.2, 0);
+    title.position.set(0, H / 2 - 0.18, 0);
     this.group.add(title);
 
-    let y = H / 2 - 0.5;
-    const rowH = 0.18;
+    let y = H / 2 - 0.42;
+    const rowH = 0.15;
 
     const addHeader = (text) => {
       const t = new Text();
       t.text = text;
-      t.fontSize = 0.075;
+      t.fontSize = 0.062;
       t.color = 0x38bdf8;
       t.anchorX = 'left';
       t.anchorY = 'middle';
-      t.position.set(-W / 2 + 0.1, y, 0);
+      t.position.set(-W / 2 + 0.08, y, 0);
       this.group.add(t);
-      y -= rowH * 0.9;
+      y -= rowH * 0.85;
     };
 
     const addSlider = (label, getter, setter, min, max, step, format) => {
       format = format || (v => v.toFixed(2));
       const lbl = new Text();
       lbl.text = label;
-      lbl.fontSize = 0.07;
+      lbl.fontSize = 0.058;
       lbl.color = 0xe5e7eb;
       lbl.anchorX = 'left';
       lbl.anchorY = 'middle';
-      lbl.position.set(-W / 2 + 0.18, y, 0);
+      lbl.position.set(-W / 2 + 0.14, y, 0);
       this.group.add(lbl);
 
       const val = new Text();
       val.text = format(getter());
-      val.fontSize = 0.07;
+      val.fontSize = 0.058;
       val.color = 0xfbbf24;
       val.anchorX = 'center';
       val.anchorY = 'middle';
-      val.position.set(0.7, y, 0);
+      val.position.set(0.55, y, 0);
       this.group.add(val);
 
-      const btnGeo = new THREE.PlaneGeometry(0.16, 0.13);
+      const btnGeo = new THREE.PlaneGeometry(0.14, 0.11);
       const minusBtn = new THREE.Mesh(btnGeo, new THREE.MeshBasicMaterial({ color: 0x334155 }));
-      minusBtn.position.set(1.15, y, 0);
+      minusBtn.position.set(1.0, y, 0);
       const plusBtn = new THREE.Mesh(btnGeo, new THREE.MeshBasicMaterial({ color: 0x334155 }));
-      plusBtn.position.set(1.4, y, 0);
+      plusBtn.position.set(1.22, y, 0);
       this.group.add(minusBtn, plusBtn);
 
       const minusLbl = new Text();
       minusLbl.text = "-";
-      minusLbl.fontSize = 0.11;
+      minusLbl.fontSize = 0.09;
       minusLbl.color = 0xffffff;
       minusLbl.anchorX = 'center';
       minusLbl.anchorY = 'middle';
-      minusLbl.position.set(1.15, y, 0.001);
+      minusLbl.position.set(1.0, y, 0.001);
       this.group.add(minusLbl);
 
       const plusLbl = new Text();
       plusLbl.text = "+";
-      plusLbl.fontSize = 0.11;
+      plusLbl.fontSize = 0.09;
       plusLbl.color = 0xffffff;
       plusLbl.anchorX = 'center';
       plusLbl.anchorY = 'middle';
-      plusLbl.position.set(1.4, y, 0.001);
+      plusLbl.position.set(1.22, y, 0.001);
       this.group.add(plusLbl);
 
       const sync = () => { val.text = format(getter()); val.sync(); };
@@ -349,27 +351,27 @@ class SettingsPanel {
     const addToggle = (label, getter, setter) => {
       const lbl = new Text();
       lbl.text = label;
-      lbl.fontSize = 0.07;
+      lbl.fontSize = 0.058;
       lbl.color = 0xe5e7eb;
       lbl.anchorX = 'left';
       lbl.anchorY = 'middle';
-      lbl.position.set(-W / 2 + 0.18, y, 0);
+      lbl.position.set(-W / 2 + 0.14, y, 0);
       this.group.add(lbl);
 
       const btn = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.55, 0.13),
+        new THREE.PlaneGeometry(0.46, 0.11),
         new THREE.MeshBasicMaterial({ color: getter() ? 0x10b981 : 0x6b7280 })
       );
-      btn.position.set(1.25, y, 0);
+      btn.position.set(1.11, y, 0);
       this.group.add(btn);
 
       const txt = new Text();
       txt.text = getter() ? "ON" : "OFF";
-      txt.fontSize = 0.075;
+      txt.fontSize = 0.06;
       txt.color = 0xffffff;
       txt.anchorX = 'center';
       txt.anchorY = 'middle';
-      txt.position.set(1.25, y, 0.001);
+      txt.position.set(1.11, y, 0.001);
       this.group.add(txt);
 
       const sync = () => {
@@ -390,7 +392,7 @@ class SettingsPanel {
 
     const addAction = (label, color, fn) => {
       const btn = new THREE.Mesh(
-        new THREE.PlaneGeometry(W - 0.4, 0.15),
+        new THREE.PlaneGeometry(W - 0.3, 0.12),
         new THREE.MeshBasicMaterial({ color: color })
       );
       btn.position.set(0, y, 0);
@@ -398,7 +400,7 @@ class SettingsPanel {
 
       const txt = new Text();
       txt.text = label;
-      txt.fontSize = 0.08;
+      txt.fontSize = 0.062;
       txt.color = 0xffffff;
       txt.anchorX = 'center';
       txt.anchorY = 'middle';
@@ -406,7 +408,7 @@ class SettingsPanel {
       this.group.add(txt);
 
       this.buttons.push({ mesh: btn, action: fn });
-      y -= rowH + 0.02;
+      y -= rowH + 0.01;
     };
 
     const lab = this.lab;
@@ -602,14 +604,22 @@ class SurvivalLab extends xb.Script {
   setupPointerRay() {
     const geo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, 0, -3)
+      new THREE.Vector3(0, 0, -10)
     ]);
     this.pointerRay = new THREE.Line(
       geo,
-      new THREE.LineBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.5 })
+      new THREE.LineBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.6 })
     );
     this.pointerRay.visible = false;
     this.add(this.pointerRay);
+
+    // Reticle: a small disc that snaps to the hit point on the settings panel.
+    this.pointerReticle = new THREE.Mesh(
+      new THREE.CircleGeometry(0.025, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfbbf24, side: THREE.DoubleSide })
+    );
+    this.pointerReticle.visible = false;
+    this.add(this.pointerReticle);
   }
 
   // ── Quiver ──────────────────────────────────────────────────────────────────
@@ -1670,8 +1680,8 @@ class SurvivalLab extends xb.Script {
     }
 
     // Pointer ray follows whichever controller isn't holding the bow.
+    let pointerCtrl = null;
     if (this.pointerRay) {
-      let pointerCtrl = null;
       for (const c of xb.core.input.controllers) {
         if (c !== this.leftController) { pointerCtrl = c; break; }
       }
@@ -1681,6 +1691,30 @@ class SurvivalLab extends xb.Script {
       } else {
         this.pointerRay.visible = false;
       }
+    }
+
+    // Reticle: project the pointer ray onto the settings panel buttons each
+    // frame so the user sees where they're aiming.
+    if (this.pointerReticle && this.settings) {
+      let placed = false;
+      if (pointerCtrl && !this.isDrawing && this.pointerRay.visible) {
+        const origin = this._tmpVec3A.setFromMatrixPosition(pointerCtrl.matrixWorld).clone();
+        const q = pointerCtrl.getWorldQuaternion(this._tmpQuat);
+        const dir = this._tmpVec3B.set(0, 0, -1).applyQuaternion(q);
+        this._raycaster.set(origin, dir);
+        this._raycaster.near = 0;
+        this._raycaster.far = 12;
+        const meshes = this.settings.buttons.map(b => b.mesh);
+        const hits = this._raycaster.intersectObjects(meshes, false);
+        if (hits.length > 0) {
+          this.pointerReticle.position.copy(hits[0].point);
+          // Orient reticle to face the camera-facing side of the hit surface
+          this.pointerReticle.lookAt(origin);
+          this.pointerReticle.visible = true;
+          placed = true;
+        }
+      }
+      if (!placed) this.pointerReticle.visible = false;
     }
 
     // [FIX #15] Animal state machine with flee timer + return
