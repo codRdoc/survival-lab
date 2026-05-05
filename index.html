@@ -1654,8 +1654,9 @@ class SurvivalLab extends xb.Script {
       // Right of head, just below head height, slightly behind.
       offset = this._tmpVec3B.set(0.22, -0.10, 0.18);
     } else {
-      // Hip: right side, ~60 cm below head, slightly forward of the body.
-      offset = this._tmpVec3B.set(0.28, -0.60, -0.10);
+      // Hip: closer to the body and a bit more forward so the right hand
+      // doesn't have to swing wide to grab.
+      offset = this._tmpVec3B.set(0.20, -0.60, -0.20);
     }
     offset.applyQuaternion(yawQuat);
     this.quiverGroup.position.copy(camPos).add(offset);
