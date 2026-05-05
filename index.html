@@ -529,9 +529,11 @@ class SurvivalLab extends xb.Script {
     this.STACK_THRESHOLD = 0.85;    // Fraction of MAX_DRAW where stack begins
     this.STACK_STIFFNESS = 50.0;    // How sharply force rises past threshold
 
-    // Arrow rest is offset slightly off the bow's central axis so the arrow
-    // shaft passes alongside the riser instead of through it.
-    this.REST_OFFSET_X = 0.025;     // Right-hand archer: arrow on +x side of riser
+    // Arrow rest is offset off the bow's central axis so the shaft passes
+    // alongside the riser instead of through it. For a right-handed archer
+    // the arrow rests on the LEFT side of the riser (opposite the draw hand).
+    // Bow's local +X is the player's right, so the rest sits at -X.
+    this.REST_OFFSET_X = -0.020;
 
     // [FIX #9] Aerodynamic drag constants
     this.AIR_DENSITY = 1.225;       // kg/m³ at sea level
@@ -575,10 +577,11 @@ class SurvivalLab extends xb.Script {
     this._controllerModelFactory = new XRControllerModelFactory();
     this._gripsAdded = [false, false];
 
-    // Quiver / arrow inventory
+    // Quiver / arrow inventory. Tolerances tuned per VR-archery research:
+    // grab ~12 cm, nock-snap ~7 cm (anything bigger feels "magnetic").
     this.arrowsAvailable = 20;
-    this.QUIVER_GRAB_RADIUS = 0.28;
-    this.NOCK_SNAP_RADIUS = 0.22;
+    this.QUIVER_GRAB_RADIUS = 0.12;
+    this.NOCK_SNAP_RADIUS = 0.07;
     this.AUTO_NOCK = false;            // when true, skips quiver — nock spawns an arrow directly
     this.QUIVER_MODES = ['bow', 'hip', 'shoulder'];
     this.QUIVER_MODE = 'bow';          // bow-mounted by default (most convenient)
@@ -746,6 +749,7 @@ class SurvivalLab extends xb.Script {
     ctrl.add(held);
     this.heldArrow = held;
     this.heldArrowState = 'holding';
+    this._heldArrowGrabTime = performance.now();  // for release lockout
     this.arrowsAvailable--;
     this._updateQuiverCount();
 
@@ -1083,8 +1087,8 @@ class SurvivalLab extends xb.Script {
     this.bowGroup = new THREE.Group();
     const curvePoints = [
       new THREE.Vector3(0,  0.7,  0),     // top tip — at brace plane
-      new THREE.Vector3(0,  0.3, -0.15),  // upper limb bulges toward target
-      new THREE.Vector3(0, -0.3, -0.15),  // lower limb bulges toward target
+      new THREE.Vector3(0,  0.3, -0.19),  // upper limb bulges toward target (brace height)
+      new THREE.Vector3(0, -0.3, -0.19),  // lower limb bulges toward target
       new THREE.Vector3(0, -0.7,  0)      // bottom tip — at brace plane
     ];
     const curve = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curvePoints), 20, 0.015, 8, false);
@@ -1249,7 +1253,10 @@ class SurvivalLab extends xb.Script {
       } else {
         apex = new THREE.Vector3(0, 0, 0);
       }
-      this.drawDistance = apex.length();
+      // Stored energy depends on the AXIAL component only — lateral string
+      // deflection stores no useful energy in real bows.  Off-axis pulls
+      // still mis-fire (direction still computed from rest → nock line).
+      this.drawDistance = Math.max(0, Math.min(apex.z, this.MAX_DRAW));
 
       const positions = this.stringLine.geometry.attributes.position.array;
       positions[3] = apex.x;
@@ -1346,7 +1353,10 @@ class SurvivalLab extends xb.Script {
       return;
     }
     if (this.heldArrowState === 'holding') {
-      this._dropArrow();
+      // Release lockout: ignore drops within the first 100 ms after grab so
+      // accidental brushes don't lose the arrow immediately.
+      const elapsed = performance.now() - (this._heldArrowGrabTime || 0);
+      if (elapsed >= 100) this._dropArrow();
     }
   }
 
@@ -1364,9 +1374,18 @@ class SurvivalLab extends xb.Script {
           apex.multiplyScalar(this.MAX_DRAW / apexLen);
         }
 
-        // Anchor consistency
-        const anchorScatter = this._anchorScatter(apex);
-        this._recordAnchor(apex);
+        // Anchor consistency: real archers reference a fixed point on the
+        // face (corner of mouth, under jaw). Track right-hand position
+        // relative to the headset, not the bow, for shot-to-shot scatter.
+        const cam = xb.core?.camera
+          || (xb.core?.renderer?.xr?.isPresenting ? xb.core.renderer.xr.getCamera() : null);
+        let anchorRef = apex;
+        if (cam) {
+          const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+          if (camPos.y > 0.5) anchorRef = rightHandWorld.clone().sub(camPos);
+        }
+        const anchorScatter = this._anchorScatter(anchorRef);
+        this._recordAnchor(anchorRef);
 
         // Firing direction = rest → apex extended (forward through the rest).
         // Using the offset rest matches the loaded-arrow visual and prevents
@@ -1654,9 +1673,9 @@ class SurvivalLab extends xb.Script {
       // Right of head, just below head height, slightly behind.
       offset = this._tmpVec3B.set(0.22, -0.10, 0.18);
     } else {
-      // Hip: closer to the body and a bit more forward so the right hand
-      // doesn't have to swing wide to grab.
-      offset = this._tmpVec3B.set(0.20, -0.60, -0.20);
+      // Hip: per VR archery / field-archery ergonomics, ~18 cm lateral,
+      // hip-crest height (~55 cm below head), 7 cm forward of the body.
+      offset = this._tmpVec3B.set(0.18, -0.55, -0.07);
     }
     offset.applyQuaternion(yawQuat);
     this.quiverGroup.position.copy(camPos).add(offset);
